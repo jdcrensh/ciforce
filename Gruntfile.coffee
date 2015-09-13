@@ -1,14 +1,20 @@
-fs = require 'fs'
-os = require 'os'
-jsforce = require 'jsforce'
-xmldom = require 'xmldom'
-_ = require 'lodash'
+_ = require('lodash')
+jsforce = require('jsforce')
+DOMParser = require('xmldom').DOMParser
+xpath = require('xpath')
+pd = require('pretty-data').pd
+git = require('simple-git')
+
+getClassName = (obj) ->
+  res = obj.constructor.toString().match /function (.{1,})\(/
+  if res?.length > 1 then res[1] else ''
 
 module.exports = (grunt) ->
-  sfdc = null
+  sfdc = pkgxml = null
+  tasks = {}
 
   # load grunt tasks
-  require('load-grunt-tasks')(@)
+  require('load-grunt-tasks') @
 
   # init configuration
   @initConfig 
@@ -52,66 +58,92 @@ module.exports = (grunt) ->
       excludes[type] = val?.split ','
   @config 'sfdc.options.metadata.exclude.components', excludes
 
-  badTarget = ->
-    grunt.fatal if target?
-      "#{@name}: invalid target (#{@target})"
-    else
-      "#{@name}: no target specified"
-
+  # simple async error reporting
   handleError = (err, done) ->
     grunt.log.error()
     grunt.fatal err
     done false
 
-  tasks = 
-    validate:
-      default: =>
-        @task.run 'git:initRepo'
-        @task.run 'sfdc:login'
-        @task.run 'sfdc:globalDescribe'
+  # runs a task target method (bound to grunt task) given its class
+  # instance; function assumes that we are bound to the grunt task
+  runTask = (instance) ->
+    fn = if (target = @args[0])? then instance[target] else instance.default
+    do _.bind (fn ? badTarget), @
+    
+  badTarget = ->
+    grunt.warn if (target = @args[0])?
+      "#{@name}: target not defined for this task (#{target})"
+    else
+      "#{@name}: default target not defined for this task"
 
-    git:
-      default: (target) -> do _.bind (tasks[@name][target] ? badTarget), @
+  # convenience mixin for registering a task. binds runTask to the grunt task
+  registerTask = (name, clazz) ->
+    grunt.registerTask name, -> _.bind(runTask, @)(tasks[@name] ?= new clazz())
+
+  class ValidateTask
+    registerTask 'validate', @
+
+    default: ->
+      grunt.task.run 'git:initRepo'
+      grunt.task.run 'sfdc:login'
+      grunt.task.run 'sfdc:globalDescribe'
+      grunt.task.run 'sfdc:packageXml'
+
+  class GitTask
+    registerTask 'git', @
+
+    initRepo: ->
+      @requiresConfig 'git.config.user.name', 'git.config.user.email', 'git.repoUrl', 'git.repoBranch'
+      grunt.log.write 'initializing repo...'
+      grunt.log.ok()
+
+  class SfdcTask
+    registerTask 'sfdc', @
+
+    login: ->
+      @requires ['git:initRepo']
+      @requiresConfig 'sfdc.options.username', 'sfdc.options.password', 'sfdc.options.securitytoken'
+      opts = @options()
+      username = opts.username + (if opts.instance then ".#{opts.instance}" else '')
+      password = "#{opts.password}#{opts.securitytoken}"
       
-      initRepo: ->
-        @requiresConfig 'git.config.user.name', 'git.config.user.email', 'git.repoUrl', 'git.repoBranch'
-        grunt.log.write 'initializing repo...'
+      sfdc = new jsforce.Connection
+        loginUrl: "https://#{if opts.instance then 'test' else 'login'}.salesforce.com" 
+        version: opts.version
+
+      done = @async()
+      grunt.log.write 'Logging in...'
+      sfdc.login(username, password).then (res) ->
         grunt.log.ok()
+        done()
+      , (err) -> handleError err, done
 
-    sfdc:
-      default: (target) -> do _.bind (tasks[@name][target] ? badTarget), @
-      
-      login: ->
-        @requires ['git:initRepo']
-        @requiresConfig 'sfdc.options.username', 'sfdc.options.password', 'sfdc.options.securitytoken'
-        opts = @options()
-        username = opts.username + (if opts.instance then ".#{opts.instance}" else '')
-        password = "#{opts.password}#{opts.securitytoken}"
-        
-        sfdc = new jsforce.Connection
-          loginUrl: "https://#{if opts.instance then 'test' else 'login'}.salesforce.com" 
-          version: opts.version
+    globalDescribe: ->
+      @requires ['sfdc:login']
+      done = @async()
+      grunt.log.write 'Fetching global describe...'
+      sfdc.metadata.describe().then (res) ->
+        grunt.config 'sfdc.describe', _.indexBy res.metadataObjects, 'xmlName'
+        grunt.log.ok()
+        done()
+      , (err) -> handleError err, done
 
-        done = @async()
-        grunt.log.write 'logging in...'
-        sfdc.login(username, password).then (res) ->
-          grunt.log.ok()
-          done()
-        , (err) -> handleError err, done
+    packageXml: ->
+      opts = @options()
+      grunt.verbose.write 'Initializing package xml...'
+      namespace = 'http://soap.sforce.com/2006/04/metadata'
+      doc = new DOMParser().parseFromString "<Package xmlns=\"#{namespace}\"><version>#{opts.version}</version></Package>"
+      grunt.verbose.ok()
 
-      globalDescribe: ->
-        @requires ['sfdc:login']
-        done = @async()
-        grunt.log.write 'fetching global describe...'
-        sfdc.metadata.describe().then (res) ->
-          grunt.config 'sfdc.describe', _.indexBy res.metadataObjects, 'xmlName'
-          grunt.log.ok()
-          done()
-        , (err) -> handleError err, done
+      console.log grunt.config 'sfdc.describe'
 
-  @file.mkdir 'build'
+      root = doc.getElementsByTagName('Package')[0]
+      for type in opts.metadata.include.types
+        types = doc.createElement 'types'
+        name = doc.createElement 'name'
+        name.appendChild doc.createTextNode type
+        types.appendChild name
+        root.appendChild types
+      grunt.file.write 'repo/package.xml', pd.xml doc.toString()
 
   @registerTask 'default', ['validate']
-  @registerTask 'validate', tasks.validate.default
-  @registerTask 'sfdc', tasks.sfdc.default
-  @registerTask 'git', tasks.git.default
