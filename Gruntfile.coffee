@@ -1,14 +1,10 @@
-_ = require('lodash')
-jsforce = require('jsforce')
-DOMParser = require('xmldom').DOMParser
-xpath = require('xpath')
-pd = require('pretty-data').pd
-
-getClassName = (obj) ->
-  res = obj.constructor.toString().match /function (.{1,})\(/
-  if res?.length > 1 then res[1] else ''
-
 module.exports = (grunt) ->
+  jsforce = require 'jsforce'
+  DOMParser = require('xmldom').DOMParser
+  xpath = require 'xpath'
+  pd = require('pretty-data').pd
+  _ = require 'lodash'
+
   sfdc = pkgxml = null
   tasks = {}
 
@@ -26,6 +22,7 @@ module.exports = (grunt) ->
           user:
             name: @option 'git-name'
             email: @option 'git-email'
+        instance: @option('sf-instance') or 'prod'
         repoUrl: @option 'repourl'
         repoBranch: @option 'branch'
         commitMessage: @option 'commit-msg'
@@ -64,8 +61,7 @@ module.exports = (grunt) ->
     grunt.fatal err
     done false
 
-  # runs a task target method (bound to grunt task) given its class
-  # instance; function assumes that we are bound to the grunt task
+  # runs a task target given a task class instance
   runTask = (instance) ->
     fn = if (target = @args[0])? then instance[target] else instance.default
     do _.bind (fn ? badTarget), @
@@ -76,70 +72,100 @@ module.exports = (grunt) ->
     else
       "#{@name}: default target not defined for this task"
 
-  # convenience mixin for registering a task. binds runTask to the grunt task
+  # convenience mixin for registering a task
   registerTask = (name, clazz) ->
     grunt.registerTask name, -> _.bind(runTask, @)(tasks[@name] ?= new clazz())
-
-  class ValidateTask
-    registerTask 'validate', @
-
-    default: ->
-      grunt.task.run 'git:initRepo'
-      grunt.task.run 'sfdc:login'
-      grunt.task.run 'sfdc:globalDescribe'
-      grunt.task.run 'sfdc:packageXml'
 
   class GitTask
     registerTask 'git', @
 
-    initRepo: ->
+    repo: ->
       @requiresConfig 'git.options.config.user.name',
         'git.options.config.user.email', 'git.options.repoUrl', 'git.options.repoBranch'
-      opts = @options()
-
-      grunt.file.mkdir 'repo'
-      git = require('simple-git') 'repo'
 
       outputHandler = (command, stdout, stderr) ->
         stdout.on 'data', (buf) -> grunt.log.writeln _.trim buf
         stderr.on 'data', (buf) -> grunt.log.writeln _.trim buf
-          
+
+      grunt.file.mkdir 'repo'
+      git = require('simple-git') 'repo'
+      opts = @options()
       done = @async()
+
       git._run 'config remote.origin.url', (err, url) ->
         return handleError err, done if err
         git.outputHandler outputHandler
         if _.trim(url) is opts.repoUrl
+          # fetch
           grunt.log.subhead 'git fetch'
           git.fetch (err, res) ->
             return handleError err, done if err
-            grunt.log.subhead 'git reset'
-            git._run "reset --hard origin/#{opts.repoBranch}", (err, res) ->
-              return handleError err, done if err
-              grunt.log.subhead 'git clean'
-              git._run 'clean -fd', (err, res) ->
+            grunt.log.ok 'OK'
+            # checkout
+            grunt.log.subhead 'git checkout'
+            git.checkoutLocalBranch opts.repoBranch, ->
+              grunt.log.ok 'OK'
+              # reset
+              grunt.log.subhead 'git reset'
+              git._run "reset --hard origin/#{opts.repoBranch}", (err, res) ->
                 return handleError err, done if err
-                grunt.log.writeln()
-                grunt.log.ok 'OK'
-                done()
+                # clean
+                grunt.log.subhead 'git clean'
+                git._run 'clean -fd', (err, res) ->
+                  return handleError err, done if err
+                  grunt.log.ok 'OK'
+                  done()
         else
           grunt.file.delete 'repo'
           git._baseDir = null
+          # clone
           grunt.log.subhead 'git clone'
-          git.clone opts.repoUrl, 'repo', (err, data) ->
+          git._run "clone --branch=#{opts.repoBranch} #{opts.repoUrl} repo", (err, res) ->
             return handleError err, done if err
             git._baseDir = 'repo'
-            git.checkoutLocalBranch opts.repoBranch, ->
-              grunt.log.writeln()
-              grunt.log.ok 'OK'
-              done()
+            done()
 
+    pkg: ->
+      git = require('simple-git') 'repo'
+      done = @async()
+      opts = @options()
+      
+      diff_tree = (filter, ref1, ref2) ->
+        "diff-tree -r --no-commit-id --name-only --minimal --diff-filter=#{filter} #{ref1} #{ref2}"
+      
+      branch = grunt.config 'git.options.repoBranch'
+
+      grunt.log.write "Getting changes diff..."
+      git._run diff_tree('ACM', opts.instance, branch), (err, res) ->
+        return handleError err, done if err
+        grunt.log.ok()
+        archive_cmd = "archive -o pkg.zip #{branch}".split ' '
+        archive_cmd.push file for file in _.words res, /.+/g
+        git._run archive_cmd, (err, res) ->
+          return handleError err, done if err
+          grunt.file.delete 'pkg' if grunt.file.exists 'pkg'
+          grunt.log.write 'Extracting diff archive...'
+          AdmZip = require 'adm-zip'
+          new AdmZip('repo/pkg.zip').extractAllTo 'pkg'
+          grunt.log.ok()
+
+          grunt.log.write 'Getting deletions diff...'
+          git._run diff_tree('D', opts.instance, branch), (err, res) ->
+            return handleError err, done if err
+            grunt.log.ok()
+            console.log res
+            grunt.event.emit 'onAfterGitPkg'
+            done()
+      
   class SfdcTask
     registerTask 'sfdc', @
 
     login: ->
-      @requires ['git:initRepo']
+      @requires ['git:repo']
       @requiresConfig 'sfdc.options.username', 'sfdc.options.password', 'sfdc.options.securitytoken'
+      done = @async()
       opts = @options()
+
       username = opts.username + (if opts.instance then ".#{opts.instance}" else '')
       password = "#{opts.password}#{opts.securitytoken}"
       
@@ -147,7 +173,6 @@ module.exports = (grunt) ->
         loginUrl: "https://#{if opts.instance then 'test' else 'login'}.salesforce.com" 
         version: opts.version
 
-      done = @async()
       grunt.log.write 'Logging in...'
       sfdc.login(username, password).then (res) ->
         grunt.log.ok()
@@ -157,27 +182,42 @@ module.exports = (grunt) ->
     globalDescribe: ->
       @requires ['sfdc:login']
       done = @async()
+      opts = @options()
+
       grunt.log.write 'Fetching global describe...'
       sfdc.metadata.describe().then (res) ->
-        grunt.config 'sfdc.describe', _.indexBy res.metadataObjects, 'xmlName'
+        grunt.config 'sfdc.describeByName', _.indexBy res.metadataObjects, 'xmlName'
+        grunt.config 'sfdc.describeByDir', _.indexBy res.metadataObjects, 'directoryName'
         grunt.log.ok()
         done()
       , (err) -> handleError err, done
 
     packageXml: ->
+      @requires ['git:repo', 'sfdc:globalDescribe']
       opts = @options()
-      grunt.verbose.write 'Initializing package xml...'
+      grunt.log.write 'Initializing package xml...'
       namespace = 'http://soap.sforce.com/2006/04/metadata'
       doc = new DOMParser().parseFromString "<Package xmlns=\"#{namespace}\"><version>#{opts.version}</version></Package>"
-      grunt.verbose.ok()
+      grunt.log.ok()
+      grunt.task.run 'git:pkg'
 
-      root = doc.getElementsByTagName('Package')[0]
-      for type in opts.metadata.include.types
-        types = doc.createElement 'types'
-        name = doc.createElement 'name'
-        name.appendChild doc.createTextNode type
-        types.appendChild name
-        root.appendChild types
-      grunt.file.write 'build/package.xml', pd.xml doc.toString()
+      grunt.event.once 'onAfterGitPkg', ->
+        grunt.file.write 'pkg/src/package.xml', pd.xml doc.toString()
+        grunt.file.write 'pkg/src/destructiveChanges.xml', pd.xml doc.toString()
+
+      # root = doc.getElementsByTagName('Package')[0]
+      # for type in opts.metadata.include.types
+      #   types = doc.createElement 'types'
+      #   name = doc.createElement 'name'
+      #   name.appendChild doc.createTextNode type
+      #   types.appendChild name
+      #   root.appendChild types
+      # grunt.file.write 'build/package.xml', pd.xml doc.toString()
 
   @registerTask 'default', ['validate']
+  @registerTask 'validate', [
+    'git:repo'
+    'sfdc:login'
+    'sfdc:globalDescribe'
+    'sfdc:packageXml'
+  ]
