@@ -3,7 +3,6 @@ jsforce = require('jsforce')
 DOMParser = require('xmldom').DOMParser
 xpath = require('xpath')
 pd = require('pretty-data').pd
-git = require('simple-git')
 
 getClassName = (obj) ->
   res = obj.constructor.toString().match /function (.{1,})\(/
@@ -19,18 +18,19 @@ module.exports = (grunt) ->
   # init configuration
   @initConfig 
     pkg: @file.readJSON 'package.json'
-    clean: ['./build']
+    clean: ['build', 'repo']
     git:
-      config:
-        push: default: 'simple'
-        user:
-          name: @option 'git-name'
-          email: @option 'git-email'
-      repoUrl: @option 'repourl'
-      repoBranch: @option 'branch'
-      commitMessage: @option 'commit-msg'
-      dryrun: @option('git-dryrun') ? false
-      tagref: @option('git-tagref') ? true
+      options:
+        config:
+          push: default: 'simple'
+          user:
+            name: @option 'git-name'
+            email: @option 'git-email'
+        repoUrl: @option 'repourl'
+        repoBranch: @option 'branch'
+        commitMessage: @option 'commit-msg'
+        dryrun: @option('git-dryrun') ? false
+        tagref: @option('git-tagref') ? true
     sfdc:
       options:
         instance: @option('sf-instance') or ''
@@ -93,9 +93,45 @@ module.exports = (grunt) ->
     registerTask 'git', @
 
     initRepo: ->
-      @requiresConfig 'git.config.user.name', 'git.config.user.email', 'git.repoUrl', 'git.repoBranch'
-      grunt.log.write 'initializing repo...'
-      grunt.log.ok()
+      @requiresConfig 'git.options.config.user.name',
+        'git.options.config.user.email', 'git.options.repoUrl', 'git.options.repoBranch'
+      opts = @options()
+
+      grunt.file.mkdir 'repo'
+      git = require('simple-git') 'repo'
+
+      outputHandler = (command, stdout, stderr) ->
+        stdout.on 'data', (buf) -> grunt.log.writeln _.trim buf
+        stderr.on 'data', (buf) -> grunt.log.writeln _.trim buf
+          
+      done = @async()
+      git._run 'config remote.origin.url', (err, url) ->
+        return handleError err, done if err
+        git.outputHandler outputHandler
+        if _.trim(url) is opts.repoUrl
+          grunt.log.subhead 'git fetch'
+          git.fetch (err, res) ->
+            return handleError err, done if err
+            grunt.log.subhead 'git reset'
+            git._run "reset --hard origin/#{opts.repoBranch}", (err, res) ->
+              return handleError err, done if err
+              grunt.log.subhead 'git clean'
+              git._run 'clean -fd', (err, res) ->
+                return handleError err, done if err
+                grunt.log.writeln()
+                grunt.log.ok 'OK'
+                done()
+        else
+          grunt.file.delete 'repo'
+          git._baseDir = null
+          grunt.log.subhead 'git clone'
+          git.clone opts.repoUrl, 'repo', (err, data) ->
+            return handleError err, done if err
+            git._baseDir = 'repo'
+            git.checkoutLocalBranch opts.repoBranch, ->
+              grunt.log.writeln()
+              grunt.log.ok 'OK'
+              done()
 
   class SfdcTask
     registerTask 'sfdc', @
@@ -135,8 +171,6 @@ module.exports = (grunt) ->
       doc = new DOMParser().parseFromString "<Package xmlns=\"#{namespace}\"><version>#{opts.version}</version></Package>"
       grunt.verbose.ok()
 
-      console.log grunt.config 'sfdc.describe'
-
       root = doc.getElementsByTagName('Package')[0]
       for type in opts.metadata.include.types
         types = doc.createElement 'types'
@@ -144,6 +178,6 @@ module.exports = (grunt) ->
         name.appendChild doc.createTextNode type
         types.appendChild name
         root.appendChild types
-      grunt.file.write 'repo/package.xml', pd.xml doc.toString()
+      grunt.file.write 'build/package.xml', pd.xml doc.toString()
 
   @registerTask 'default', ['validate']
