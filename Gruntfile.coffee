@@ -1,12 +1,15 @@
 module.exports = (grunt) ->
+  fs = require 'fs-extra'
+  glob = require 'glob'
+  async = require 'async'
   jsforce = require 'jsforce'
   DOMParser = require('xmldom').DOMParser
   xpath = require 'xpath'
   pd = require('pretty-data').pd
   _ = require 'lodash'
 
-  sfdc = pkgxml = null
-  tasks = {}
+  sfdc = null
+  instances = {}
 
   # load grunt tasks
   require('load-grunt-tasks') @
@@ -50,7 +53,7 @@ module.exports = (grunt) ->
   
   # init metadata component excludes
   excludes = @config('pkg').defaultExcludes
-  for type in @config 'sfdc.options.metadata.include.types'
+  @config('sfdc.options.metadata.include.types').forEach (type) =>
     if (val = @option "#{type}-excludes")? or val is ''
       excludes[type] = val?.split ','
   @config 'sfdc.options.metadata.exclude.components', excludes
@@ -74,7 +77,7 @@ module.exports = (grunt) ->
 
   # convenience mixin for registering a task
   registerTask = (name, clazz) ->
-    grunt.registerTask name, -> _.bind(runTask, @)(tasks[@name] ?= new clazz())
+    grunt.registerTask name, -> _.bind(runTask, @)(instances[@name] ?= new clazz())
 
   class GitTask
     registerTask 'git', @
@@ -87,7 +90,7 @@ module.exports = (grunt) ->
         stdout.on 'data', (buf) -> grunt.log.writeln _.trim buf
         stderr.on 'data', (buf) -> grunt.log.writeln _.trim buf
 
-      grunt.file.mkdir 'repo'
+      fs.ensureDir 'repo'
       git = require('simple-git') 'repo'
       opts = @options()
       done = @async()
@@ -95,66 +98,80 @@ module.exports = (grunt) ->
       git._run 'config remote.origin.url', (err, url) ->
         return handleError err, done if err
         git.outputHandler outputHandler
-        if _.trim(url) is opts.repoUrl
-          # fetch
-          grunt.log.subhead 'git fetch'
-          git.fetch (err, res) ->
-            return handleError err, done if err
-            grunt.log.ok 'OK'
-            # checkout
-            grunt.log.subhead 'git checkout'
-            git.checkoutLocalBranch opts.repoBranch, ->
+
+        tasks = []
+        if _.trim(url) is opts.repoUrl 
+          tasks.push (cb) ->
+            # fetch
+            grunt.log.subhead 'git fetch'
+            git._run 'fetch --all --tags', (err, res) ->
+              return handleError err, done if err
               grunt.log.ok 'OK'
-              # reset
-              grunt.log.subhead 'git reset'
-              git._run "reset --hard origin/#{opts.repoBranch}", (err, res) ->
+              # checkout
+              grunt.log.subhead 'git checkout'
+              git.checkout opts.repoBranch, (err, res) ->
                 return handleError err, done if err
-                # clean
-                grunt.log.subhead 'git clean'
-                git._run 'clean -fd', (err, res) ->
+                grunt.log.ok 'OK'
+                # reset
+                grunt.log.subhead 'git reset'
+                git._run "reset --hard origin/#{opts.repoBranch}", (err, res) ->
                   return handleError err, done if err
                   grunt.log.ok 'OK'
-                  done()
+                  # clean
+                  grunt.log.subhead 'git clean'
+                  git._run 'clean -fd', (err, res) ->
+                    return handleError err, done if err
+                    grunt.log.ok 'OK'
+                    cb()
         else
-          grunt.file.delete 'repo'
-          git._baseDir = null
-          # clone
-          grunt.log.subhead 'git clone'
-          git._run "clone --branch=#{opts.repoBranch} #{opts.repoUrl} repo", (err, res) ->
-            return handleError err, done if err
-            git._baseDir = 'repo'
-            done()
+          tasks.push (cb) ->
+            if _.trim(url) isnt opts.repoUrl
+              grunt.file.delete 'repo'
+              git._baseDir = null
+              # clone
+              grunt.log.subhead 'git clone'
+              git._run "clone --branch=#{opts.repoBranch} #{opts.repoUrl} repo", (err, res) ->
+                return handleError err, done if err
+                git._baseDir = 'repo'
+                grunt.log.ok 'OK'
+                cb()
+            else
+              cb()
+
+        async.series tasks, -> done()
 
     pkg: ->
       git = require('simple-git') 'repo'
       done = @async()
       opts = @options()
+      branch = opts.repoBranch
       
       diff_tree = (filter, ref1, ref2) ->
         "diff-tree -r --no-commit-id --name-only --minimal --diff-filter=#{filter} #{ref1} #{ref2}"
       
-      branch = grunt.config 'git.options.repoBranch'
-
       grunt.log.write "Getting changes diff..."
       git._run diff_tree('ACM', opts.instance, branch), (err, res) ->
         return handleError err, done if err
         grunt.log.ok()
+        res = res.replace /,/g, '' # simple-git somehow scatters commas into the result
         archive_cmd = "archive -o pkg.zip #{branch}".split ' '
-        archive_cmd.push file for file in _.words res, /.+/g
+        unless grunt.config 'sfdc.options.fullDeploy'
+          _.words(res, /.+/g).forEach (path) -> archive_cmd.push path
         git._run archive_cmd, (err, res) ->
           return handleError err, done if err
-          grunt.file.delete 'pkg' if grunt.file.exists 'pkg'
+          fs.removeSync 'pkg'
           grunt.log.write 'Extracting diff archive...'
           AdmZip = require 'adm-zip'
           new AdmZip('repo/pkg.zip').extractAllTo 'pkg'
           grunt.log.ok()
+          grunt.event.emit 'gitpkg-extracted'
 
           grunt.log.write 'Getting deletions diff...'
           git._run diff_tree('D', opts.instance, branch), (err, res) ->
             return handleError err, done if err
             grunt.log.ok()
-            console.log res
-            grunt.event.emit 'onAfterGitPkg'
+            if _.trim res
+              grunt.event.emit 'gitpkg-deletions', _.words res, /.+/g
             done()
       
   class SfdcTask
@@ -166,7 +183,7 @@ module.exports = (grunt) ->
       done = @async()
       opts = @options()
 
-      username = opts.username + (if opts.instance then ".#{opts.instance}" else '')
+      username = opts.username + '.jondev'
       password = "#{opts.password}#{opts.securitytoken}"
       
       sfdc = new jsforce.Connection
@@ -186,8 +203,8 @@ module.exports = (grunt) ->
 
       grunt.log.write 'Fetching global describe...'
       sfdc.metadata.describe().then (res) ->
-        grunt.config 'sfdc.describeByName', _.indexBy res.metadataObjects, 'xmlName'
-        grunt.config 'sfdc.describeByDir', _.indexBy res.metadataObjects, 'directoryName'
+        grunt.config 'sfdc.describe.byName', _.indexBy res.metadataObjects, 'xmlName'
+        grunt.config 'sfdc.describe.byDir', _.indexBy res.metadataObjects, 'directoryName'
         grunt.log.ok()
         done()
       , (err) -> handleError err, done
@@ -195,24 +212,58 @@ module.exports = (grunt) ->
     packageXml: ->
       @requires ['git:repo', 'sfdc:globalDescribe']
       opts = @options()
-      grunt.log.write 'Initializing package xml...'
       namespace = 'http://soap.sforce.com/2006/04/metadata'
-      doc = new DOMParser().parseFromString "<Package xmlns=\"#{namespace}\"><version>#{opts.version}</version></Package>"
-      grunt.log.ok()
-      grunt.task.run 'git:pkg'
+      pkg_tmpl = "<Package xmlns=\"#{namespace}\"><version>#{opts.version}</version></Package>"
 
-      grunt.event.once 'onAfterGitPkg', ->
+      grunt.event.once 'gitpkg-extracted', ->
+        grunt.log.writeln 'Building package xml...'
+        doc = new DOMParser().parseFromString pkg_tmpl
+        tree = glob.sync '**', cwd: 'pkg/src', nosort: on, nodir: on, ignore: ['**/*-meta.xml', 'package.xml']
+
+        describeByDir = grunt.config 'sfdc.describe.byDir'
+        describeByName = grunt.config 'sfdc.describe.byName'
+
+        _.forEach describeByDir, (describe, dir) ->
+          return unless describe.inFolder
+          glob.sync("#{dir}/*-meta.xml", cwd: 'pkg/src').forEach (path) ->
+            suffix = if (suffix = describe.suffix)? then ".#{suffix}" else ''
+            tree.push path[...path.lastIndexOf '-meta.xml'] + suffix
+
+        groupByType = (path) ->
+          describeByDir[path[0...path.indexOf '/']].xmlName
+
+        trimNames = (result, list, name) ->
+          describe = describeByName[name]
+          result[name] = list.map (path) ->
+            path = path.substring 1 + path.indexOf '/'
+            if (suffix = describe.suffix)?
+              path = path[0...path.lastIndexOf(suffix) - 1]
+            path
+
+        componentMap = _(tree).sort().groupBy(groupByType).transform(trimNames).value()
+
+        root = _.first doc.getElementsByTagName 'Package'
+
+        _.keys(componentMap).sort().forEach (type) ->
+          list = componentMap[type]
+          _types = doc.createElement 'types'
+          _name = doc.createElement 'name'
+          _name.appendChild doc.createTextNode type
+          _types.appendChild _name
+          list.forEach (name) ->
+            _members = doc.createElement 'members'
+            _members.appendChild doc.createTextNode name
+            _types.appendChild _members
+          root.appendChild _types
+
         grunt.file.write 'pkg/src/package.xml', pd.xml doc.toString()
-        grunt.file.write 'pkg/src/destructiveChanges.xml', pd.xml doc.toString()
+        grunt.log.ok 'OK'
 
-      # root = doc.getElementsByTagName('Package')[0]
-      # for type in opts.metadata.include.types
-      #   types = doc.createElement 'types'
-      #   name = doc.createElement 'name'
-      #   name.appendChild doc.createTextNode type
-      #   types.appendChild name
-      #   root.appendChild types
-      # grunt.file.write 'build/package.xml', pd.xml doc.toString()
+      grunt.event.once 'gitpkg-deletions', (files) ->
+        grunt.log.writeln 'Building destructiveChanges xml...'
+        doc = new DOMParser().parseFromString pkg_tmpl
+        grunt.file.write 'pkg/src/destructiveChanges.xml', pd.xml doc.toString()
+        grunt.log.ok 'OK'
 
   @registerTask 'default', ['validate']
   @registerTask 'validate', [
@@ -220,4 +271,5 @@ module.exports = (grunt) ->
     'sfdc:login'
     'sfdc:globalDescribe'
     'sfdc:packageXml'
+    'git:pkg'
   ]
