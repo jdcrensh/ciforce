@@ -23,9 +23,13 @@ module.exports = (grunt) ->
 
   db = new lokijs 'default'
   
-  describes = db.addCollection 'describes',
-    indices: ['xmlName', 'directoryName']
-    unique: ['xmlName', 'directoryName']
+  describes =
+    metadata: db.addCollection('metadataDescribe', indices: ['xmlName', 'directoryName'], unique: ['xmlName', 'directoryName'])
+    components: db.addCollection('componentDescribe')
+    global: db.addCollection('globalDescribe')
+
+  componentResult = db.addCollection 'componentResult'
+  runTestResult = db.addCollection 'runTestResult'
 
   conf =
     git:
@@ -75,9 +79,11 @@ module.exports = (grunt) ->
   @config 'sfdc.options.metadata.exclude.components', excludes
 
   # simple async error reporting
-  handleError = (err, done) ->
-    grunt.log.error()
-    done false
+  asyncCallback = (err, callback) ->
+    callback err
+
+  gruntAsyncCallback = (err, callback) ->
+    callback !err
 
   # runs a task target given a task class instance
   runTask = (instance) ->
@@ -98,9 +104,10 @@ module.exports = (grunt) ->
     zip = new Zip 'repo/pkg.zip'
     zip.extractAllTo 'pkg'
 
+  namespace = 'http://soap.sforce.com/2006/04/metadata'
+  pkg_tmpl = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Package xmlns=\"#{namespace}\"></Package>"
+
   writePackage = (componentMap, path) ->
-    namespace = 'http://soap.sforce.com/2006/04/metadata'
-    pkg_tmpl = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Package xmlns=\"#{namespace}\"></Package>"
     doc = new DOMParser().parseFromString pkg_tmpl
     root = _.first doc.getElementsByTagName 'Package'
     _.keys(componentMap).sort().forEach (type) ->
@@ -126,7 +133,7 @@ module.exports = (grunt) ->
   includeMetaFiles = (files) ->
     files = _.union files, files.filter(noMeta)
       .map((path) -> path.replace /^src\//, '')
-      .filter((path) -> describes.by('directoryName', path[...path.indexOf('/')]).metaFile)
+      .filter((path) -> describes.metadata.by('directoryName', path[...path.indexOf('/')]).metaFile)
       .map((path) -> "src/#{path}-meta.xml")
     files.sort()
 
@@ -148,17 +155,22 @@ module.exports = (grunt) ->
       git_run = (cmd) -> (callback) -> 
         grunt.log.subhead "git #{cmd}"
         git._run cmd, (err, res) ->
-          return handleError err, callback if err
+          return asyncCallback err, callback if err
           grunt.log.ok 'OK'
           callback()
 
       git._run 'config remote.origin.url', (err, url) ->
-        return handleError err, done if err
+        return gruntAsyncCallback err, done if err
         url = _.trim url
 
+        outfn = (buf) ->
+          str = _.trim(buf)['cyan']
+          unless ~str.indexOf('error:') or ~str.indexOf('fatal:')
+            grunt.log.writeln str
+
         git.outputHandler (cmd, stdout, stderr) ->
-          stdout.on 'data', (buf) -> grunt.log.writeln _.trim buf
-          stderr.on 'data', (buf) -> grunt.log.writeln _.trim buf
+          stdout.on 'data', outfn
+          stderr.on 'data', outfn
 
         if url is conf.git.url 
           async.series [
@@ -166,16 +178,20 @@ module.exports = (grunt) ->
             git_run "checkout -f #{conf.git.branch}"
             git_run "reset --hard origin/#{conf.git.branch}"
             git_run 'clean -fd'
-          ], -> done()
+          ], (err) ->
+            grunt.log.writeln err['red'] if err
+            done !err
         else
           grunt.file.delete 'repo'
           git._baseDir = null
-          git._run "clone --branch=#{conf.git.branch} #{conf.git.url} repo", ->
+          git._run "clone --branch=#{conf.git.branch} #{conf.git.url} repo", (err) ->
+            grunt.log.writeln err['red'] if err
+            grunt.log.ok 'OK' if !err
             git._baseDir = 'repo'
-            done()
+            done !err
 
     pkg: ->
-      @requires ['git:repo']
+      @requires ['git:repo', 'clean:pkg']
       done = @async()
 
       git = new Git 'repo'
@@ -185,10 +201,10 @@ module.exports = (grunt) ->
 
       groupByType = (path) ->
         dir = path[0...path.indexOf '/']
-        describes.by('directoryName', dir).xmlName
+        describes.metadata.by('directoryName', dir).xmlName
 
       pathsToNames = (result, list, name) ->
-        suffix = describes.by('xmlName', name).suffix
+        suffix = describes.metadata.by('xmlName', name).suffix
         result[name] = list.map (path) ->
           path = path[path.indexOf('/') + 1..]
           # remove file ext from path
@@ -197,7 +213,7 @@ module.exports = (grunt) ->
           path
 
       includeFolders = (files) -> (dir, cb) ->
-        describe = describes.by('directoryName', dir)
+        describe = describes.metadata.by('directoryName', dir)
         glob "#{dir}/*-meta.xml", cwd: 'pkg/src', (err, res) ->
           cb err if err
           res.forEach (path) ->
@@ -211,12 +227,11 @@ module.exports = (grunt) ->
       diff_changed = (callback) ->
         grunt.log.write 'Getting changes diff...'
         git._run diff_tree('ACM', conf.git.ref, conf.git.branch), (err, res) ->
-          return handleError err, callback if err
+          return asyncCallback err, callback if err
           grunt.log.ok()
           
           unless _.trim res
-            doc = new DOMParser().parseFromString pkg_tmpl
-            grunt.file.write 'pkg/src/package.xml', pd.xml doc.toString()
+            writePackage {}, 'pkg/src/package.xml'
             return callback()
             
           archive_cmd = "archive -0 -o pkg.zip #{conf.git.branch}".split ' '
@@ -234,9 +249,9 @@ module.exports = (grunt) ->
           files = files.filter(minimatch.filter '!.*').map (path) -> path.replace /^src\//, ''
 
           git._run archive_cmd, (err) ->
-            return handleError err, callback if err
+            return asyncCallback err, callback if err
             unzip 'repo/pkg.zip', 'pkg'
-            directories = describes.find(inFolder: true).map (describe) -> describe.directoryName
+            directories = describes.metadata.find(inFolder: true).map (describe) -> describe.directoryName
             async.each directories, includeFolders(files), ->
               writePackage buildComponentMap(files), 'pkg/src/package.xml'
               callback()
@@ -245,7 +260,7 @@ module.exports = (grunt) ->
         return callback() unless pkg.sfdc.undeployMissing
         grunt.log.write 'Getting deletions diff...'
         git._run diff_tree('D', conf.git.ref, conf.git.branch), (err, res) ->
-          return handleError err, callback if err
+          return asyncCallback err, callback if err
           grunt.log.ok()
           return callback() unless _.trim res
 
@@ -253,20 +268,19 @@ module.exports = (grunt) ->
             .filter(minimatch.filter '!{.*,package.xml}', matchBase: on)
             .map (path) -> path.replace /^src\//, ''
 
-          directories = describes.find(inFolder: true).map (describe) -> describe.directoryName
+          directories = describes.metadata.find(inFolder: true).map (describe) -> describe.directoryName
           async.each directories, includeFolders(files), ->
             writePackage buildComponentMap(files), 'pkg/src/destructiveChangesPost.xml'
             callback()
 
       # run diffs in parallel
-      async.series [diff_changed, diff_deletes], ->
-        done()
+      async.series [diff_changed, diff_deletes], (err) ->
+        gruntAsyncCallback err, done
         
   class SfdcTask
     registerTask 'sfdc', @
 
     login: ->
-      @requires ['git:repo']
       @requiresConfig 'sfdc.options.username', 'sfdc.options.password', 'sfdc.options.securitytoken'
       done = @async()
       
@@ -283,20 +297,82 @@ module.exports = (grunt) ->
       sfdc.login(username, "#{conf.sfdc.password}#{conf.sfdc.securitytoken}").then (res) ->
         grunt.log.ok()
         done()
-      , (err) -> handleError err, done
+      , (err) -> gruntAsyncCallback err, done
 
-    globalDescribe: ->
+    describeMetadata: ->
       @requires ['sfdc:login']
       done = @async()
 
       grunt.log.write 'Fetching global describe...'
       sfdc.metadata.describe().then (res) ->
-        describes.insert res.metadataObjects
+        describes.metadata.insert res.metadataObjects
         grunt.log.ok()
         done()
-      , (err) -> handleError err, done
+      , (err) ->
+        grunt.log.error err
+        done false
+
+    describeGlobal: ->
+      @requires ['sfdc:login']
+      done = @async()
+      grunt.log.write 'Fetching SObject describe...'
+      sfdc.describeGlobal().then (res) ->
+        describes.global.insert res.sobjects
+        grunt.log.ok()
+        done()
+      , (err) ->
+        grunt.log.error err
+        done false
+
+    list: ->
+      @requires ['sfdc:login']
+      done = @async()
+      grunt.log.write 'Listing metadata properties...'
+      types = describes.metadata.find()
+      async.each types, (type, callback) ->
+        xmlName = if type.inFolder
+          if type.xmlName is 'EmailTemplate'
+            'EmailFolder'
+          else
+            "#{type.xmlName}Folder"
+        else
+          type.xmlName
+        sfdc.metadata.list(type: xmlName).then (res) ->
+          if res?
+            describes.components.insert res
+            grunt.verbose.ok "#{xmlName} (#{res.length ? 1})"
+            if type.inFolder
+              folders = describes.components.find(type: xmlName).map (obj) -> obj.fullName
+              async.each folders, (folder, callback) ->
+                sfdc.metadata.list(type: type.xmlName, folder: folder).then (res) ->
+                  if res?
+                    describes.components.insert res
+                    grunt.verbose.ok "#{type.xmlName}: #{folder} (#{res.length ? 1})"
+                    callback null, true
+                  else
+                    callback null, true
+                , (err) ->
+                  callback err
+              , (err) ->
+                if err
+                  grunt.log.error err if err
+                  done false
+                else
+                  done()
+              callback null, true
+          else
+            callback null, true
+        , (err) ->
+          callback err
+      , (err) ->
+        if err
+          grunt.log.error err if err
+          done false
+        else
+          done()
 
     validate: ->
+      @requires ['sfdc:login']
       opts = 
         checkOnly: true
         purgeOnDelete: true
@@ -342,7 +418,16 @@ module.exports = (grunt) ->
 
       async.during test, next, complete
 
-    deploy: ->
+    retrieve: ->
+      done = @async()
+      sfdc.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
+        console.log res
+        res.pipe fs.createWriteStream 'pkg.zip'
+        done()
+      , (err) ->
+        grunt.log.error err
+        done false
+
 
   class DeployResult
     constructor: (data) ->
@@ -419,10 +504,18 @@ module.exports = (grunt) ->
 
   @registerTask 'default', ['validate']
   @registerTask 'validate', [
-    'git:repo'
     'sfdc:login'
-    'sfdc:globalDescribe'
+    'sfdc:describeMetadata'
+    'sfdc:describeGlobal'
+    'git:repo'
     'clean:pkg'
     'git:pkg'
     'sfdc:validate'
+  ]
+  @registerTask 'commitChanges', [
+    'sfdc:login'
+    'sfdc:describeMetadata'
+    'sfdc:describeGlobal'
+    'sfdc:list'
+    'git:repo'
   ]
