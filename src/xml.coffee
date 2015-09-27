@@ -33,7 +33,6 @@ class PackageXml
       return
 
   write: (path) ->
-    console.log pd.xml @doc.toString()
     fs.outputFileSync path, pd.xml @doc.toString()
 
 

@@ -134,23 +134,23 @@ class ComponentResults
 
 class SfdcModule
   # logs error and returns normal callback
-  asyncContinue: (done) -> (err) ->
+  @asyncContinue: (done) -> (err) ->
     log.error err if err
     done()
 
-  updateDeployResult: (res) ->
+  @updateDeployResult: (res) =>
     [@lastDeployResult, @deployResult] = [@deployResult, new DeployResult res]
 
-  getDeployResult: ->
+  @getDeployResult: =>
     @deployResult ? {}
 
-  getRunTestResult: ->
+  @getRunTestResult: =>
     @deployResult?.runTestResult ? {}
 
-  getComponentResults: ->
+  @getComponentResults: =>
     @deployResult?.componentResults ? {}
 
-  login: ->
+  @login: =>
     username = if config.sfdc.sandbox
       "#{config.sfdc.username}.#{config.sfdc.sandbox}"
     else
@@ -162,37 +162,38 @@ class SfdcModule
 
     @con.login username, "#{config.sfdc.password}#{config.sfdc.securitytoken}"
 
-  describeMetadata: ->
+  @describeMetadata: =>
     @con.metadata.describe().then (res) ->
       db.metadata.insert res.metadataObjects
 
-  describeGlobal: ->
+  @describeGlobal: =>
     @con.describeGlobal().then (res) ->
       db.global.insert res.sobjects
 
-  listMetadata: (done) ->
-    log.write 'Listing metadata properties...'
-    types = db.metadata.find()
+  @typeQueries: ->
+    db.metadata.find().map (obj) ->
+      type: obj.xmlFolderName ? obj.xmlName
 
-    async.each types, (type, done) =>
-      name = type.xmlFolderName ? type.xmlName
+  @folderQueries: ->
+    folderTypes = _.indexBy db.metadata.find(inFolder: true), 'xmlFolderName'
+    db.components.find(type: $in: Object.keys folderTypes).map (obj) ->
+      type: folderTypes[obj.type].xmlName
+      folder: obj.fullName
 
-      @con.metadata.list(type: name).then (items) =>
-        return done() unless items?
-        db.insertComponents items
-        log.ok "#{name} (#{items.length ? 1})"
-        return done() unless type.inFolder
-        async.each _.flatten([items]), (folder, done) =>
-          @con.metadata.list(type: name, folder: folder.fullName).then (folderItem) ->
-            return done() unless folderItem?
-            db.insertComponents folderItem
-            log.ok "#{name}: #{folder.fullName} (#{folderItem.length ? 1})"
-          , @asyncContinue done
-        , @asyncContinue done
-      , done
+  @listMetadata: (done) =>
+    listQuery = (query, next) =>
+      @con.metadata.list query, (err, res) ->
+        db.components.insert res if res?
+        next err
+
+    async.series
+      # retrieve metadata listings in chunks
+      one: (next) => async.each _.chunk(@typeQueries(), 3), listQuery, next
+      # retrieve folder contents
+      two: (next) => async.each _.chunk(@folderQueries(), 3), listQuery, next
     , done
 
-  validate: (done) ->
+  @validate: (done) =>
     archive = require('archiver') 'zip'
     archive.directory 'pkg', ''
     archive.finalize()
@@ -232,7 +233,7 @@ class SfdcModule
       done err ? res.success
     return
 
-  retrieve: (done) ->
+  @retrieve: (done) =>
     @con.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
       log.writeln res
       res.pipe fs.createWriteStream 'pkg.zip'
@@ -241,4 +242,4 @@ class SfdcModule
       done err
 
 
-module.exports = new SfdcModule()
+module.exports = exports = SfdcModule

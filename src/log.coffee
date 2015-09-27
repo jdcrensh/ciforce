@@ -9,7 +9,7 @@ class LogModule
     (d = new Date().toTimeString())[...d.indexOf ' ']
 
   syswrite: (msg='', ts=true) ->
-    ts_str = if ts then "[#{colors.grey timestamp()}] " else ''
+    ts_str = if ts then "[#{colors.grey @timestamp()}] " else ''
     process.stdout.write "#{ts_str}#{msg}", 'UTF-8'
 
   write: (msg='') ->

@@ -27,7 +27,7 @@ pkg_zip = 'pkg.zip'
 quiet = true
 
 includeFolders = (files) -> (dir, cb) ->
-  describe = db.metadata.by 'directoryName', dir
+  describe = db.metadata.findObject directoryName: dir
   glob "#{dir}/*-meta.xml", cwd: "#{pkg}/src", (err, res) ->
     return cb err if err
     res.forEach (path) ->
@@ -39,30 +39,20 @@ buildComponentMap = (files) ->
   noMeta = minimatch.filter '!*-meta.xml', matchBase: on
 
   metadataTypeByPath = (path) ->
-    db.metadata.by('directoryName', beforeSlash path).xmlName
+    db.metadata.findObject(directoryName: beforeSlash path).xmlName
 
   removeSuffix = (result, list, name) ->
-    suffix = db.metadata.by('xmlName', name).suffix
+    suffix = db.metadata.findObject(xmlName: name).suffix
     result[name] = list.map (path) ->
       path = path[path.indexOf('/') + 1..]
       # remove file ext from path
-      if suffix?
-        path = path[...path.lastIndexOf(suffix) - 1]
-      path
+      if suffix? then path[...path.lastIndexOf(suffix) - 1] else path
 
   _(files).filter(noMeta).groupBy(metadataTypeByPath).transform(removeSuffix).value()
 
 beforeSlash = (str) -> str[...str.indexOf path.sep]
 
 afterSlash = (str) -> str[1 + str.indexOf(path.sep)..]
-
-pkg_unarchive = (done, res) ->
-  unzip = gulp.src "#{cwd}/#{pkg_zip}"
-    .pipe unzip pkg
-    .pipe gulp.dest pkg
-
-  unzip.on 'end', done
-  unzip.on 'error', done
 
 
 class GitModule
@@ -87,55 +77,81 @@ class GitModule
     ], done
     return
 
+    # include -meta.xml files where components have changed
+    # include components where meta.xml files have changed
+
   pkg: (done) ->
     async.auto
       diff: (done) ->
         args = "diff-tree -r --no-commit-id --name-status #{config.git.ref} #{config.git.branch}"
         git.exec {args, cwd, quiet}, (err, res) ->
           return done err if err
-          # build array and filter out hidden files and package.xml
+          # build changes array
+          toUpdate = {}
+          toInsert = []
           _.words res.replace(/,/g, ''), /.+/g
             .filter minimatch.filter '!{.*,package.xml}', matchBase: on
             .forEach (line) ->
-              [..., status, file] = /^(\w)\t(.*)/.exec line
-              {root, dir, base, ext, name} = path.parse file
-              obj = {}
-              obj.path = file
-              obj.status = status
+              [..., diffStatus, fileName] = /^(\w)\tsrc\/(.*)/.exec line
+              obj = db.components.findObject fileName: fileName.replace /-meta\.xml$/, ''
+              if obj
+                obj.diffStatus = diffStatus
+                toUpdate[obj.$loki] = obj
+              else if diffStatus isnt 'D' and not fileName.match /-meta\.xml$/
+                {dir, base} = path.parse fileName
+                obj = {fileName, diffStatus}
+                if ~dir.indexOf path.sep
+                  directory = beforeSlash dir
+                  obj.fullName = "#{afterSlash dir}/#{base}"
+                else
+                  directory = dir
+                  obj.fullName = base
 
-              dir = dir.replace "src#{path.sep}", ''
-              if ~dir.indexOf path.sep
-                obj.directory = beforeSlash dir
-                obj.folder = afterSlash dir
-                obj.member = "#{obj.folder}/#{base}"
-              else
-                obj.directory = dir
-                obj.member = base
+                describe = db.metadata.findObject directoryName: directory
+                if suffix = describe.suffix
+                  obj.fullName = obj.fullName.replace new RegExp("\.#{suffix}$"), ''
+                obj.type = describe.xmlName
 
-              describe = db.metadata.by 'directoryName', obj.directory
-              obj.member = obj.member.replace ".#{describe.suffix}", ''
-              db.diff.insert obj
+                toInsert.push obj
+          db.components.insert toInsert
+          db.components.update _.values toUpdate
           done()
 
       archive: ['diff', (done) ->
-        changes = db.findChangedPaths()
-        # TODO: include -meta.xml and components where meta.xml files have changed...
-        args = "archive -0 -o #{pkg_zip} #{config.git.branch} '#{changes.join('\' \'')}'"
+        metaTypes = _.pluck db.metadata.find(metaFile: true), 'xmlName'
+        changeset = db.components.find $and: [
+          managableState: $ne: 'installed'
+        ,
+          diffStatus: $in: 'ACMRT'.split ''
+        ]
+        changeset.reduce (arr, obj) ->
+          arr.push "src/#{obj.fileName}"
+          arr.push "src/#{obj.fileName}-meta.xml" if obj.type in metaTypes
+          return arr
+        , []
+        # console.log changeset
+        args = "archive -0 -o #{pkg_zip} #{config.git.branch} '#{changeset.join('\' \'')}'"
         git.exec {args, cwd, quiet}, done
       ]
 
-      unarchive: ['archive', pkg_unarchive]
+      unarchive: ['archive',  (done, res) ->
+        unzip = gulp.src "#{cwd}/#{pkg_zip}"
+          .pipe unzip pkg
+          .pipe gulp.dest pkg
+        unzip.on 'end', done
+        unzip.on 'error', done
+      ]
 
       packageXml: ['unarchive', (done, res) ->
-        changes = db.findChangedPaths().map (path) -> path[4..]
-        async.each db.directories(), includeFolders(changes), ->
+        changes = db.findChanges().map (obj) -> obj.path[4..]
+        async.each db.findDirectories(), includeFolders(changes), ->
           xml.writePackage buildComponentMap(changes), "#{pkg}/src/package.xml"
-          done()
+          done err
       ]
 
       packageDestructiveXml: ['diff', (done, res) ->
-        deleted = db.findDeletedPaths().map (path) -> path[4..]
-        async.each db.directories(), includeFolders(deleted), (err) ->
+        deleted = db.findDeletes().map (obj) -> obj.path[4..]
+        async.each db.findDirectories(), includeFolders(deleted), (err) ->
           xml.writePackage buildComponentMap(deleted), "#{pkg}/src/destructiveChangesPost.xml"
           done err
       ]

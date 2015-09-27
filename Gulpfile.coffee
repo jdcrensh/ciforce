@@ -12,7 +12,7 @@ gulp.task 'clean', ['clean:pkg', 'clean:repo']
 
 ### git tasks ###
 gulp.task 'git:repo', git.repo
-gulp.task 'git:pkg', ['clean:pkg', 'git:repo', 'sfdc:describeMetadata'], git.pkg
+gulp.task 'git:pkg', ['clean:pkg', 'git:repo', 'sfdc:describeMetadata', 'sfdc:listMetadata'], git.pkg
 
 ### sfdc tasks ###
 gulp.task 'sfdc:login', sfdc.login
