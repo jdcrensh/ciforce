@@ -38,8 +38,7 @@ class PackageXml
     fs.outputFile path, pd.xml(@doc.toString()), done
 
 
-class XmlModule
-
+module.exports =
   writePackage: (components, version, path, done) ->
     doc = new PackageXml(version)
     # append type nodes
@@ -49,6 +48,3 @@ class XmlModule
     # write to file
     doc.write path, done
     return
-
-
-module.exports = new XmlModule()

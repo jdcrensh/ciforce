@@ -26,8 +26,7 @@ branch = config.git.branch
 repourl = config.git.url
 gitref = config.git.ref
 
-class GitModule
-
+module.exports =
   repo: (done) ->
     fs.ensureDirSync cwd
     async.waterfall [
@@ -47,9 +46,6 @@ class GitModule
           git.clone repourl, args: "--branch=#{branch} #{cwd}", done
     ], done
     return
-
-    # include -meta.xml files where components have changed
-    # include components where meta.xml files have changed
 
   pkg: (done) ->
     async.auto
@@ -134,6 +130,3 @@ class GitModule
         xml.writePackage members, version, dest, done
       ]
     , done
-
-
-module.exports = new GitModule()

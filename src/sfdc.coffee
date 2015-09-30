@@ -7,6 +7,9 @@ async    = require 'async'
 jsforce  = require 'jsforce'
 gutil    = require 'gulp-util'
 
+con = deployResult = lastDeployResult = null
+
+
 class DeployResult
 
   constructor: (data={}) ->
@@ -132,114 +135,105 @@ class ComponentResults
   report: ->
 
 
-class SfdcModule
-  # logs error and returns normal callback
-  @asyncContinue: (done) -> (err) ->
-    gutil.log gutil.colors.red err if err
-    done()
+updateDeployResult = (res) ->
+  [lastDeployResult, deployResult] = [deployResult, new DeployResult res]
 
-  @updateDeployResult: (res) =>
-    [@lastDeployResult, @deployResult] = [@deployResult, new DeployResult res]
+getDeployResult = ->
+  deployResult ? {}
 
-  @getDeployResult: =>
-    @deployResult ? {}
+getRunTestResult = ->
+  deployResult?.runTestResult ? {}
 
-  @getRunTestResult: =>
-    @deployResult?.runTestResult ? {}
+getComponentResults = ->
+  deployResult?.componentResults ? {}
 
-  @getComponentResults: =>
-    @deployResult?.componentResults ? {}
+typeQueries = ->
+  db.metadata.find().map (obj) ->
+    type: obj.xmlFolderName ? obj.xmlName
 
-  @login: =>
+folderQueries = ->
+  folderTypes = _.indexBy db.metadata.find(inFolder: true), 'xmlFolderName'
+  db.components.find(type: $in: Object.keys folderTypes).map (obj) ->
+    type: folderTypes[obj.type].xmlName
+    folder: obj.fullName
+
+listQuery = (query, next) ->
+  con.metadata.list query, (err, res) ->
+    db.components.insert res if res?
+    next err
+
+module.exports =
+  login: ->
     username = if config.sfdc.sandbox
       "#{config.sfdc.username}.#{config.sfdc.sandbox}"
     else
       config.sfdc.username
 
-    @con = new jsforce.Connection
+    con = new jsforce.Connection
       loginUrl: "https://#{['login', 'test'][~~!!config.sfdc.sandbox]}.salesforce.com"
       version: config.sfdc.version
 
-    @con.login username, "#{config.sfdc.password}#{config.sfdc.securitytoken}"
+    con.login username, "#{config.sfdc.password}#{config.sfdc.securitytoken}"
 
-  @describeMetadata: =>
-    @con.metadata.describe().then (res) ->
+  describeMetadata: ->
+    con.metadata.describe().then (res) ->
       db.metadata.insert res.metadataObjects
 
-  @describeGlobal: =>
-    @con.describeGlobal().then (res) ->
+  describeGlobal: ->
+    con.describeGlobal().then (res) ->
       db.global.insert res.sobjects
 
-  @typeQueries: ->
-    db.metadata.find().map (obj) ->
-      type: obj.xmlFolderName ? obj.xmlName
-
-  @folderQueries: ->
-    folderTypes = _.indexBy db.metadata.find(inFolder: true), 'xmlFolderName'
-    db.components.find(type: $in: Object.keys folderTypes).map (obj) ->
-      type: folderTypes[obj.type].xmlName
-      folder: obj.fullName
-
-  @listMetadata: (done) =>
-    listQuery = (query, next) =>
-      @con.metadata.list query, (err, res) ->
-        db.components.insert res if res?
-        next err
-
+  listMetadata: (done) ->
     async.series
       # retrieve metadata listings in chunks
-      one: (next) => async.each _.chunk(@typeQueries(), 3), listQuery, next
+      one: (next) -> async.each _.chunk(typeQueries(), 3), listQuery, next
       # retrieve folder contents
-      two: (next) => async.each _.chunk(@folderQueries(), 3), listQuery, next
+      two: (next) -> async.each _.chunk(folderQueries(), 3), listQuery, next
     , done
 
-  @validate: (done) =>
+  validate: (done) ->
     archive = require('archiver') 'zip'
     archive.directory 'pkg', ''
     archive.finalize()
 
-    deploy = @con.metadata.deploy archive,
+    deploy = con.metadata.deploy archive,
       checkOnly: true
       purgeOnDelete: true
       rollbackOnError: true
       runAllTests: false
       testLevel: 'RunLocalTests'
 
-    async.during (done) =>
-      res = @getDeployResult()
+    async.during (done) ->
+      res = getDeployResult()
       if res.id
-        @con.metadata.checkDeployStatus res.id, true, (err, res) =>
+        con.metadata.checkDeployStatus res.id, true, (err, res) ->
           return done err, false if err
-          res = @updateDeployResult res
+          res = updateDeployResult res
           res.reportFailures()
 
           msg = res.statusMessage()
           if msg and res.statusMessage() isnt msg
             if res.done
-              if res.success then gutil.log gutil.colors.green msg
-              else gutil.log gutil.colors.red msg
+              gutil.log gutil.colors[if res.success then 'green' else 'red'] msg
             else
               gutil.log msg
           done null, !res.done
       else
-        deploy.check (err, res) =>
-          @updateDeployResult res
+        deploy.check (err, res) ->
+          updateDeployResult res
           done err, !err
     , (next) ->
       setTimeout next, 1000
-    , (err) =>
-      res = @getDeployResult()
+    , (err) ->
+      res = getDeployResult()
       res.report()
       done err ? res.success
-    return
+      return
 
-  @retrieve: (done) =>
-    @con.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
+  retrieve: (done) ->
+    con.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
       gutil.log res
       res.pipe fs.createWriteStream 'pkg.zip'
       done()
     , (err) ->
       done err
-
-
-module.exports = SfdcModule

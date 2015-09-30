@@ -1,75 +1,65 @@
 # ext modules
 Loki = require 'lokijs'
+loki = new Loki()
 
-class DbModule
+folderOverrides =
+  EmailTemplate: 'Email'
 
-  folderOverrides:
-    EmailTemplate: 'Email'
+###
+# git file diffs
+#
+# Model:
+#   path: String; eg. 'src/classes/Calculations.cls'
+#   status: String; eg. 'M'
+#   directory: String; eg. 'classes'
+#   member: String; eg. 'Calculations'
+###
+diff = loki.addCollection 'diff'
 
-  constructor: ->
-    @loki = new Loki()
+###*
+# global metadata describe
+###
+metadata = loki.addCollection 'metadataDescribe',
+  indices: ['xmlName', 'directoryName']
 
-    ###
-    # git file diffs
-    #
-    # Model:
-    #   path: String; eg. 'src/classes/Calculations.cls'
-    #   status: String; eg. 'M'
-    #   directory: String; eg. 'classes'
-    #   member: String; eg. 'Calculations'
-    ###
-    @diff = @loki.addCollection 'diff'
+metadata._onPreInsert = (obj) ->
+  if obj.inFolder
+    obj.xmlFolderName = (folderOverrides[obj.xmlName] ? obj.xmlName) + 'Folder'
 
-    # global metadata describe
-    @metadata = @loki.addCollection 'metadataDescribe',
-      indices: ['xmlName', 'directoryName']
+metadata.on 'pre-insert', metadata._onPreInsert
 
-    @metadata.on 'pre-insert', (obj) =>
-      if obj.inFolder
-        obj.xmlFolderName = (@folderOverrides[obj.xmlName] ? obj.xmlName) + 'Folder'
+###*
+# org components describe
+###
+components = loki.addCollection 'componentDescribe',
+  indices: ['fileName']
 
-    # org components describe
-    @components = @loki.addCollection 'componentDescribe', indices: ['fileName']
+components._onPreUpsert = (obj) ->
+  if obj.type is 'CustomObjectTranslation'
+    obj.managableState = if obj.fullName.match(/__.+__c/g)? then 'installed' else 'unmanaged'
 
-    @components.on 'pre-insert', (obj) ->
-      if obj.type is 'CustomObjectTranslation'
-        obj.managableState = if obj.fullName.match(/__.+__c/g)? then 'installed' else 'unmanaged'
+components._onUpsert = (obj) ->
+  if obj.managableState is 'installed'
+    components.remove obj
 
-    @components.on 'insert', (obj) =>
-      if obj.managableState is 'installed'
-        @components.remove obj
+components.on 'pre-insert', components._onPreUpsert
+components.on 'insert', components._onUpsert
+components.on 'update', components._onUpsert
 
-    @components.on 'update', (obj) =>
-      if obj.managableState is 'installed'
-        @components.remove obj
+###*
+# org sobjects describe
+###
+global = loki.addCollection 'globalDescribe'
 
-    # org sobjects describe
-    @global = @loki.addCollection 'globalDescribe'
+###*
+# deploy results for components
+###
+componentResult = loki.addCollection 'componentResult'
 
-    # deploy results for components
-    @componentResult = @loki.addCollection 'componentResult'
+###*
+# deploy results for tests
+###
+runTestResult = loki.addCollection 'runTestResult'
 
-    # deploy results for tests
-    @runTestResult = @loki.addCollection 'runTestResult'
-
-  insertComponent: (item) ->
-    @components.insert item
-
-  findChanges: ->
-    @diff.find status: $in: 'ACMRT'.split ''
-
-  findDeletes: ->
-    @diff.find status: 'D'
-
-  findDirectories: ->
-    @metadata.find().map (obj) -> obj.directoryName
-
-  findFolders: =>
-    console.log 'finding folders...'
-    @components.find type: $in: @metadata.find(inFolder: true).map (obj) -> obj.xmlName
-
-  isManaged: (obj) ->
-    obj.fullName?.match(/__[^_]+__c/g)?
-
-
-module.exports = new DbModule()
+# export
+module.exports = {diff, metadata, components, global, componentResult, runTestResult}
