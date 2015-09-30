@@ -1,5 +1,5 @@
+# ext modules
 Loki = require 'lokijs'
-
 
 class DbModule
 
@@ -34,6 +34,14 @@ class DbModule
     @components.on 'pre-insert', (obj) ->
       if obj.type is 'CustomObjectTranslation'
         obj.managableState = if obj.fullName.match(/__.+__c/g)? then 'installed' else 'unmanaged'
+
+    @components.on 'insert', (obj) =>
+      if obj.managableState is 'installed'
+        @components.remove obj
+
+    @components.on 'update', (obj) =>
+      if obj.managableState is 'installed'
+        @components.remove obj
 
     # org sobjects describe
     @global = @loki.addCollection 'globalDescribe'

@@ -1,8 +1,10 @@
-pkg       = require '../package.json'
-config    = require './config'
-db        = require './db'
-log       = require './log'
-xml       = require './xml'
+# local libs
+{config, db, xml} = require('require-dir')()
+
+# package object
+pkg = require '../package.json'
+
+# ext modules
 _         = require 'lodash'
 async     = require 'async'
 del       = require 'del'
@@ -14,46 +16,15 @@ minimatch = require 'minimatch'
 path      = require 'path'
 unzip     = require 'gulp-unzip'
 
-# repo directory
-cwd = 'repo'
+cwd = 'repo'        # repo directory
+pkg = 'pkg'         # package directory
+pkg_zip = 'pkg.zip' # package zip filename
+quiet = true        # git quite mode
 
-# package directory
-pkg = 'pkg'
-
-# package zip filename
-pkg_zip = 'pkg.zip'
-
-# git quite mode
-quiet = true
-
-includeFolders = (files) -> (dir, cb) ->
-  describe = db.metadata.findObject directoryName: dir
-  glob "#{dir}/*-meta.xml", cwd: "#{pkg}/src", (err, res) ->
-    return cb err if err
-    res.forEach (path) ->
-      suffix = if (suffix = describe.suffix)? then ".#{suffix}" else ''
-      files.push path[...path.lastIndexOf '-meta.xml'] + suffix
-    cb()
-
-buildComponentMap = (files) ->
-  noMeta = minimatch.filter '!*-meta.xml', matchBase: on
-
-  metadataTypeByPath = (path) ->
-    db.metadata.findObject(directoryName: beforeSlash path).xmlName
-
-  removeSuffix = (result, list, name) ->
-    suffix = db.metadata.findObject(xmlName: name).suffix
-    result[name] = list.map (path) ->
-      path = path[path.indexOf('/') + 1..]
-      # remove file ext from path
-      if suffix? then path[...path.lastIndexOf(suffix) - 1] else path
-
-  _(files).filter(noMeta).groupBy(metadataTypeByPath).transform(removeSuffix).value()
-
-beforeSlash = (str) -> str[...str.indexOf path.sep]
-
-afterSlash = (str) -> str[1 + str.indexOf(path.sep)..]
-
+version = config.sfdc.version
+branch = config.git.branch
+repourl = config.git.url
+gitref = config.git.ref
 
 class GitModule
 
@@ -64,16 +35,16 @@ class GitModule
         args = 'config remote.origin.url'
         git.exec {args, cwd, quiet}, done
       (res, done) ->
-        if _.trim(res) is config.git.url
+        if repourl is _.trim res
           async.series [
             (done) -> git.fetch '', '', {args: '--all --tags', cwd}, done
-            (done) -> git.checkout config.git.branch, {args: '-f', cwd}, done
-            (done) -> git.reset "origin/#{config.git.branch}", {args: '--hard', cwd}, done
+            (done) -> git.checkout branch, {args: '-f', cwd}, done
+            (done) -> git.reset "origin/#{branch}", {args: '--hard', cwd}, done
             (done) -> git.exec {args: 'clean -fd', cwd, log: true}, done
           ], done
         else
           del cwd
-          git.clone config.git.url, args: "--branch=#{config.git.branch} #{cwd}", done
+          git.clone repourl, args: "--branch=#{branch} #{cwd}", done
     ], done
     return
 
@@ -83,58 +54,67 @@ class GitModule
   pkg: (done) ->
     async.auto
       diff: (done) ->
-        args = "diff-tree -r --no-commit-id --name-status #{config.git.ref} #{config.git.branch}"
+        parseLine = (line) ->
+          [diffStatus, fileName] = line
+
+          # locate the file object by its fileName and update diffStatus if found
+          if (obj = db.components.findObject fileName: fileName.replace /-meta\.xml$/, '')?
+            obj.diffStatus = diffStatus
+
+          # parsing the diff's file path to generate a new file object.
+          # note: the file isn't in the org so parsing deletes here is not necessary
+          else if diffStatus isnt 'D' and not fileName.match /-meta\.xml$/
+            {dir, base} = path.parse fileName
+            [dir, subpath] = path.shift dir
+
+            unless (describe = db.metadata.findObject directoryName: dir)?
+              console.log "Unable to locate describe for directoryName: #{dir}"
+              return
+
+            obj = {fileName, diffStatus}
+            obj.fullName = path.join subpath, base
+
+            if suffix = describe.suffix
+              obj.fullName = obj.fullName.replace new RegExp("\\.#{suffix}$"), ''
+            obj.type = describe.xmlName
+
+          return obj
+
+        # execute the git-diff-tree command
+        args = "diff-tree -r --no-commit-id --name-status #{gitref} #{branch}"
         git.exec {args, cwd, quiet}, (err, res) ->
           return done err if err
-          # build changes array
-          toUpdate = {}
-          toInsert = []
-          _.words res.replace(/,/g, ''), /.+/g
-            .filter minimatch.filter '!{.*,package.xml}', matchBase: on
-            .forEach (line) ->
-              [..., diffStatus, fileName] = /^(\w)\tsrc\/(.*)/.exec line
-              obj = db.components.findObject fileName: fileName.replace /-meta\.xml$/, ''
-              if obj
-                obj.diffStatus = diffStatus
-                toUpdate[obj.$loki] = obj
-              else if diffStatus isnt 'D' and not fileName.match /-meta\.xml$/
-                {dir, base} = path.parse fileName
-                obj = {fileName, diffStatus}
-                if ~dir.indexOf path.sep
-                  directory = beforeSlash dir
-                  obj.fullName = "#{afterSlash dir}/#{base}"
-                else
-                  directory = dir
-                  obj.fullName = base
 
-                describe = db.metadata.findObject directoryName: directory
-                if suffix = describe.suffix
-                  obj.fullName = obj.fullName.replace new RegExp("\.#{suffix}$"), ''
-                obj.type = describe.xmlName
+          # parse the diff output
+          diffs = _.chain res.replace /,/g, ''
+            .words(/.+/g).map (line) -> [(res = /^(\w)\t(.*)/.exec line)[1], path.shift(res[2])[1]]
+            .filter _.modArgs minimatch.filter('!{.*,package.xml}', matchBase: true), (line) -> line[1]
+            .map(parseLine).compact()
+            .groupBy (obj) -> if obj.$loki? then 'updates' else 'inserts'
+            .value()
 
-                toInsert.push obj
-          db.components.insert toInsert
-          db.components.update _.values toUpdate
-          done()
+          # insert/update parsed diff output
+          db.components.insert diffs.inserts
+          db.components.update _.uniq diffs.updates, (obj) -> obj.$loki
 
-      archive: ['diff', (done) ->
+          # diff completed
+          done null,
+            changes: db.components.find diffStatus: $in: 'ACMRT'.split ''
+            deletes: db.components.find diffStatus: 'D'
+
+      archive: ['diff', (done, res) ->
         metaTypes = _.pluck db.metadata.find(metaFile: true), 'xmlName'
-        changeset = db.components.find $and: [
-          managableState: $ne: 'installed'
-        ,
-          diffStatus: $in: 'ACMRT'.split ''
-        ]
-        changeset.reduce (arr, obj) ->
+        changeset = res.diff.changes.reduce (arr, obj) ->
           arr.push "src/#{obj.fileName}"
           arr.push "src/#{obj.fileName}-meta.xml" if obj.type in metaTypes
           return arr
         , []
         # console.log changeset
-        args = "archive -0 -o #{pkg_zip} #{config.git.branch} '#{changeset.join('\' \'')}'"
-        git.exec {args, cwd, quiet}, done
+        args = "archive -0 -o #{pkg_zip} #{branch} '#{changeset.join('\' \'')}'"
+        git.exec {args, cwd, quiet}, (err) -> done err, changeset
       ]
 
-      unarchive: ['archive',  (done, res) ->
+      unarchive: ['archive',  (done) ->
         unzip = gulp.src "#{cwd}/#{pkg_zip}"
           .pipe unzip pkg
           .pipe gulp.dest pkg
@@ -143,17 +123,15 @@ class GitModule
       ]
 
       packageXml: ['unarchive', (done, res) ->
-        changes = db.findChanges().map (obj) -> obj.path[4..]
-        async.each db.findDirectories(), includeFolders(changes), ->
-          xml.writePackage buildComponentMap(changes), "#{pkg}/src/package.xml"
-          done err
+        dest = "#{pkg}/src/package.xml"
+        members = _(res.diff.changes).groupBy('type').mapPlucked('fullName').value()
+        xml.writePackage members, version, dest, done
       ]
 
       packageDestructiveXml: ['diff', (done, res) ->
-        deleted = db.findDeletes().map (obj) -> obj.path[4..]
-        async.each db.findDirectories(), includeFolders(deleted), (err) ->
-          xml.writePackage buildComponentMap(deleted), "#{pkg}/src/destructiveChangesPost.xml"
-          done err
+        dest = "#{pkg}/src/destructiveChangesPost.xml"
+        members = _(res.diff.deletes).groupBy('type').mapPlucked('fullName').value()
+        xml.writePackage members, version, dest, done
       ]
     , done
 

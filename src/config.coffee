@@ -1,7 +1,9 @@
-pkg   = require '../package.json'
+# package object
+pkg = require '../package.json'
+
+# ext modules
 fs    = require 'fs-extra'
 {env} = require 'gulp-util'
-
 
 class ConfigModule
 

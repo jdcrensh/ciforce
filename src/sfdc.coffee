@@ -1,10 +1,11 @@
-config   = require './config'
-db       = require './db'
-log      = require './log'
+# local libs
+{config, db} = require('require-dir')()
+
+# ext modules
 _        = require 'lodash'
 async    = require 'async'
 jsforce  = require 'jsforce'
-
+gutil    = require 'gulp-util'
 
 class DeployResult
 
@@ -42,7 +43,7 @@ class DeployResult
       @runTestResult.reportFailures failures.tests
 
   report: ->
-    log.writeln do ->
+    gutil.log do ->
       if @success is 'SucceededPartial'
         'Deployment patially succeeded.'
       else if @success
@@ -53,37 +54,37 @@ class DeployResult
         'Deploy not completed yet.'
 
     if @errorMessage
-      log.writeln "#{@errorStatusCode}: #{@errorMessage}"
+      gutil.log "#{@errorStatusCode}: #{@errorMessage}"
 
-    log.writeln()
-    log.writeln "Id: #{@id}"
-    log.writeln "Status: #{@status}"
-    log.writeln "Success: #{@success}"
-    log.writeln "Done: #{@done}"
-    log.writeln "Component Errors: #{@numberComponentErrors}"
-    log.writeln "Components Deployed: #{@numberComponentsDeployed}"
-    log.writeln "Components Total: #{@numberComponentsTotal}"
-    log.writeln "Test Errors: #{@numberTestErrors}"
-    log.writeln "Tests Completed: #{@numberTestsCompleted}"
-    log.writeln "Tests Total: #{@numberTestsTotal}"
+    gutil.log()
+    gutil.log "Id: #{@id}"
+    gutil.log "Status: #{@status}"
+    gutil.log "Success: #{@success}"
+    gutil.log "Done: #{@done}"
+    gutil.log "Component Errors: #{@numberComponentErrors}"
+    gutil.log "Components Deployed: #{@numberComponentsDeployed}"
+    gutil.log "Components Total: #{@numberComponentsTotal}"
+    gutil.log "Test Errors: #{@numberTestErrors}"
+    gutil.log "Tests Completed: #{@numberTestsCompleted}"
+    gutil.log "Tests Total: #{@numberTestsTotal}"
 
     @reportDeployResultDetails @details
 
   reportDeployResultDetails: (details) ->
     if details
-      log.writeln()
+      gutil.log('')
       failures = _.flatten [details.componentFailures]
       if failures
         if failures.length
-          log.writeln 'Failures:'
+          gutil.log 'Failures:'
 
         failures.forEach (f) ->
-          log.writeln " - #{f.problemType} on #{f.fileName} : #{f.problem}"
+          gutil.log " - #{f.problemType} on #{f.fileName} : #{f.problem}"
 
       if process.verbose
         successes = _.flatten [details.componentSuccesses]
         if successes.length
-          log.writeln 'Successes:'
+          gutil.log 'Successes:'
 
         successes.forEach (s) ->
           flag = switch 'true'
@@ -91,7 +92,7 @@ class DeployResult
             when "#{s.created}" then '(A)'
             when "#{s.deleted}" then '(D)'
             else '(~)'
-          log.writeln " - #{flag} #{s.fileName}#{if s.componentType then ' [' + s.componentType + ']' else ''}"
+          gutil.log " - #{flag} #{s.fileName}#{if s.componentType then ' [' + s.componentType + ']' else ''}"
 
 
 class RunTestResult
@@ -105,16 +106,15 @@ class RunTestResult
 
   reportFailures: (failures) ->
     return unless failures?.length
-    err = [_.repeat('-', 80), 'Test Failures:']
+    sep = _.repeat '-', 80
+    gutil.log sep
+    gutil.log 'Test Failures:'
     failures.forEach (failure, i) ->
-      stackTrace = _(failure.stackTrace.split '\n').map (line) -> "   #{line}"
-      err.push """
-        #{i + 1}. #{failure.name}.#{failure.methodName}
-           #{failure.message}
-        #{stackTrace.join '\n'}
-      """
-    err.push _.repeat '-', 80
-    log.writelns err.join '\n'
+      indent = _.repeat ' ', (num = "#{i + 1}. ").length
+      gutil.log "#{num}#{failure.name}.#{failure.methodName}"
+      gutil.log indent + failure.message
+      failure.stackTrace.split('\n').forEach (line) -> gutil.log indent + "#{line}"
+    gutil.log sep
 
   report: ->
 
@@ -135,7 +135,7 @@ class ComponentResults
 class SfdcModule
   # logs error and returns normal callback
   @asyncContinue: (done) -> (err) ->
-    log.error err if err
+    gutil.log gutil.colors.red err if err
     done()
 
   @updateDeployResult: (res) =>
@@ -216,10 +216,10 @@ class SfdcModule
           msg = res.statusMessage()
           if msg and res.statusMessage() isnt msg
             if res.done
-              if res.success then log.ok msg
-              else log.error msg
+              if res.success then gutil.log gutil.colors.green msg
+              else gutil.log gutil.colors.red msg
             else
-              log.writeln msg
+              gutil.log msg
           done null, !res.done
       else
         deploy.check (err, res) =>
@@ -235,11 +235,11 @@ class SfdcModule
 
   @retrieve: (done) =>
     @con.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
-      log.writeln res
+      gutil.log res
       res.pipe fs.createWriteStream 'pkg.zip'
       done()
     , (err) ->
       done err
 
 
-module.exports = exports = SfdcModule
+module.exports = SfdcModule
