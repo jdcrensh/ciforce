@@ -5,9 +5,11 @@
 _        = require 'lodash'
 async    = require 'async'
 jsforce  = require 'jsforce'
+gulp     = require 'gulp'
 gutil    = require 'gulp-util'
+zip      = require 'gulp-zip'
 
-con = deployResult = lastDeployResult = null
+con = deployResult = lastDeployResult = canceled = null
 
 
 class DeployResult
@@ -23,7 +25,6 @@ class DeployResult
     if @status?
       status = switch @status
         when 'InProgress' then 'In Progress'
-        when 'Pending' then 'Waiting for other deployments to finish'
         else @status
 
       msg += status
@@ -46,7 +47,11 @@ class DeployResult
       @runTestResult.reportFailures failures.tests
 
   report: ->
-    gutil.log do ->
+    @reportDeployResultSummary()
+    @reportDeployResultDetails @details
+
+  reportDeployResultSummary: ->
+    gutil.log do =>
       if @success is 'SucceededPartial'
         'Deployment patially succeeded.'
       else if @success
@@ -71,8 +76,6 @@ class DeployResult
     gutil.log "Tests Completed: #{@numberTestsCompleted}"
     gutil.log "Tests Total: #{@numberTestsTotal}"
 
-    @reportDeployResultDetails @details
-
   reportDeployResultDetails: (details) ->
     if details
       gutil.log('')
@@ -80,9 +83,8 @@ class DeployResult
       if failures
         if failures.length
           gutil.log 'Failures:'
-
-        failures.forEach (f) ->
-          gutil.log " - #{f.problemType} on #{f.fileName} : #{f.problem}"
+          failures.forEach (f) ->
+            gutil.log " - #{f?.problemType} on #{f?.fileName} : #{f?.problem}"
 
       if process.verbose
         successes = _.flatten [details.componentSuccesses]
@@ -137,9 +139,13 @@ class ComponentResults
 
 updateDeployResult = (res) ->
   [lastDeployResult, deployResult] = [deployResult, new DeployResult res]
+  deployResult
 
 getDeployResult = ->
   deployResult ? {}
+
+getCancelDeployResult = ->
+  cancelDeployResult ? {}
 
 getRunTestResult = ->
   deployResult?.runTestResult ? {}
@@ -161,6 +167,17 @@ listQuery = (query, next) ->
   con.metadata.list query, (err, res) ->
     db.components.insert res if res?
     next err
+
+exitHandler = (options, err) -> ->
+  if options.cancel and (res = getDeployResult())?.id
+    canceled = true
+    con.metadata.cancelDeploy res.id
+  else
+    process.exit()
+
+process.on 'exit', exitHandler
+process.on 'SIGINT', exitHandler cancel: true
+process.on 'uncaughtException', exitHandler
 
 module.exports =
   login: ->
@@ -206,13 +223,14 @@ module.exports =
     async.during (done) ->
       res = getDeployResult()
       if res.id
+        process.stdin.resume()
         con.metadata.checkDeployStatus res.id, true, (err, res) ->
           return done err, false if err
           res = updateDeployResult res
           res.reportFailures()
 
           msg = res.statusMessage()
-          if msg and res.statusMessage() isnt msg
+          if msg and lastDeployResult.statusMessage() isnt msg
             if res.done
               gutil.log gutil.colors[if res.success then 'green' else 'red'] msg
             else
@@ -228,6 +246,7 @@ module.exports =
       res = getDeployResult()
       res.report()
       done err ? res.success
+      process.exit() if canceled
       return
 
   retrieve: (done) ->
