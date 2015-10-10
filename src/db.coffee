@@ -1,4 +1,3 @@
-# ext modules
 Loki = require 'lokijs'
 loki = new Loki()
 
@@ -20,7 +19,7 @@ diff = loki.addCollection 'diff'
 # global metadata describe
 ###
 metadata = loki.addCollection 'metadataDescribe',
-  indices: ['xmlName', 'directoryName']
+  indices: ['xmlName', 'xmlFolderName', 'directoryName']
 
 metadata._onPreInsert = (obj) ->
   if obj.inFolder
@@ -36,10 +35,14 @@ components = loki.addCollection 'componentDescribe',
 
 components._onPreUpsert = (obj) ->
   if obj.type is 'CustomObjectTranslation'
-    obj.managableState = if obj.fullName.match(/__.+__c/g)? then 'installed' else 'unmanaged'
+    obj.manageableState = if obj.fullName.match(/__.+__c/g)? then 'installed' else 'unmanaged'
+
+  # set member type name used in package xml (i.e. *Folder types)
+  describe = metadata.findObject xmlFolderName: obj.type
+  obj.memberType = if describe? then describe.xmlName else obj.type
 
 components._onUpsert = (obj) ->
-  if obj.managableState is 'installed'
+  if obj.manageableState is 'installed'
     components.remove obj
 
 components.on 'pre-insert', components._onPreUpsert

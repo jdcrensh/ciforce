@@ -1,10 +1,8 @@
-# local libs
 {git, sfdc} = require('require-dir') './src', recurse: true
 
 # ext modules
-gulp    = require 'gulp'
-del     = require 'del'
-console = require 'better-console'
+gulp = require 'gulp'
+del  = require 'del'
 
 gulp.task 'default', ['git:repo']
 

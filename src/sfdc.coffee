@@ -1,144 +1,31 @@
-# local libs
-{config, db} = require('require-dir')()
+async        = require 'async'
+gulp         = require 'gulp'
+gutil        = require 'gulp-util'
+path         = require 'path'
+zip          = require 'gulp-zip'
+_            = require 'lodash'
+console      = require 'better-console'
 
-# ext modules
-_        = require 'lodash'
-async    = require 'async'
-jsforce  = require 'jsforce'
-gulp     = require 'gulp'
-gutil    = require 'gulp-util'
-zip      = require 'gulp-zip'
+{config, db, events, jsforce} = require('require-dir') '.', recurse: true
 
-con = deployResult = lastDeployResult = canceled = null
+conn = deployResult = lastDeployResult = canceled = null
 
+jsforceOpts =
+  username: if config.sfdc.sandbox
+    "#{config.sfdc.username}.#{config.sfdc.sandbox}"
+  else
+    config.sfdc.username
+  password: "#{config.sfdc.password}#{config.sfdc.securitytoken}"
+  loginUrl: "https://#{['login', 'test'][~~!!config.sfdc.sandbox]}.salesforce.com"
+  version: config.sfdc.version
+  logger: gutil
 
-class DeployResult
-
-  constructor: (data={}) ->
-    _.assign @, data
-    @runTestResult = new RunTestResult @
-    @componentResults = new ComponentResults @
-
-  statusMessage: ->
-    msg = ''
-    method = ['Deployment', 'Validation'][~~@checkOnly]
-    if @status?
-      status = switch @status
-        when 'InProgress' then 'In Progress'
-        else @status
-
-      msg += status
-
-      msg += switch status
-        when 'Canceled' then " by #{@canceledByName}"
-        when 'Canceling' then ''
-        else
-          if @stateDetail? then " -- #{@stateDetail}" else ''
-    msg
-
-  getRecentFailures: (old) ->
-    components: @componentResults.getRecentFailures old.componentResults
-    tests: @runTestResult.getRecentFailures old.runTestResult
-
-  reportFailures: (failures={}) ->
-    if failures.components?.length
-      @componentResults.reportFailures failures.components
-    if failures.tests?.length
-      @runTestResult.reportFailures failures.tests
-
-  report: ->
-    @reportDeployResultSummary()
-    @reportDeployResultDetails @details
-
-  reportDeployResultSummary: ->
-    gutil.log do =>
-      if @success is 'SucceededPartial'
-        'Deployment patially succeeded.'
-      else if @success
-        'Deploy succeeded.'
-      else if @done
-        'Deploy failed.'
-      else
-        'Deploy not completed yet.'
-
-    if @errorMessage
-      gutil.log "#{@errorStatusCode}: #{@errorMessage}"
-
-    gutil.log()
-    gutil.log "Id: #{@id}"
-    gutil.log "Status: #{@status}"
-    gutil.log "Success: #{@success}"
-    gutil.log "Done: #{@done}"
-    gutil.log "Component Errors: #{@numberComponentErrors}"
-    gutil.log "Components Deployed: #{@numberComponentsDeployed}"
-    gutil.log "Components Total: #{@numberComponentsTotal}"
-    gutil.log "Test Errors: #{@numberTestErrors}"
-    gutil.log "Tests Completed: #{@numberTestsCompleted}"
-    gutil.log "Tests Total: #{@numberTestsTotal}"
-
-  reportDeployResultDetails: (details) ->
-    if details
-      gutil.log('')
-      failures = _.flatten [details.componentFailures]
-      if failures
-        if failures.length
-          gutil.log 'Failures:'
-          failures.forEach (f) ->
-            gutil.log " - #{f?.problemType} on #{f?.fileName} : #{f?.problem}"
-
-      if process.verbose
-        successes = _.flatten [details.componentSuccesses]
-        if successes.length
-          gutil.log 'Successes:'
-
-        successes.forEach (s) ->
-          flag = switch 'true'
-            when "#{s.changed}" then '(M)'
-            when "#{s.created}" then '(A)'
-            when "#{s.deleted}" then '(D)'
-            else '(~)'
-          gutil.log " - #{flag} #{s.fileName}#{if s.componentType then ' [' + s.componentType + ']' else ''}"
-
-
-class RunTestResult
-
-  constructor: (deployResult) ->
-    _.assign @, deployResult.details?.runTestResult ? {}
-    @failures = _.compact [@failures] unless _.isArray @failures
-
-  getRecentFailures: (old) ->
-    if old?.numFailures then @failures[old.numFailures..] else []
-
-  reportFailures: (failures) ->
-    return unless failures?.length
-    sep = _.repeat '-', 80
-    gutil.log sep
-    gutil.log 'Test Failures:'
-    failures.forEach (failure, i) ->
-      indent = _.repeat ' ', (num = "#{i + 1}. ").length
-      gutil.log "#{num}#{failure.name}.#{failure.methodName}"
-      gutil.log indent + failure.message
-      failure.stackTrace.split('\n').forEach (line) -> gutil.log indent + "#{line}"
-    gutil.log sep
-
-  report: ->
-
-
-class ComponentResults
-  constructor: (deployResult) ->
-    @successes = deployResult.details?.componentSuccesses ? []
-
-  getRecentFailures: (old) -> []
-
-  reportFailures: (failures) ->
-    return unless failures?.length
-    failures.forEach (f) ->
-
-  report: ->
-
+handleError = (err, done) ->
+  gutil.log gutil.colors.red err
+  done err, false
 
 updateDeployResult = (res) ->
-  [lastDeployResult, deployResult] = [deployResult, new DeployResult res]
+  [lastDeployResult, deployResult] = [deployResult, new jsforce.deploy.DeployResult res]
   deployResult
 
 getDeployResult = ->
@@ -164,41 +51,43 @@ folderQueries = ->
     folder: obj.fullName
 
 listQuery = (query, next) ->
-  con.metadata.list query, (err, res) ->
+  conn.metadata.list query, (err, res) ->
     db.components.insert res if res?
     next err
 
-exitHandler = (options, err) -> ->
+exitHandler = (options={}, err) -> ->
   if options.cancel and (res = getDeployResult())?.id
     canceled = true
-    con.metadata.cancelDeploy res.id
+    conn.metadata._invoke 'cancelDeploy', id: res.id
   else
     process.exit()
 
-process.on 'exit', exitHandler
+process.on 'exit', exitHandler()
 process.on 'SIGINT', exitHandler cancel: true
-process.on 'uncaughtException', exitHandler
+process.on 'uncaughtException', exitHandler()
+
+deployComplete = (err, res, done) ->
+  return handleError err, done if err
+  res = getDeployResult()
+  res.report()
+  done res.success
+  process.exit() if canceled
 
 module.exports =
-  login: ->
-    username = if config.sfdc.sandbox
-      "#{config.sfdc.username}.#{config.sfdc.sandbox}"
-    else
-      config.sfdc.username
+  login: (done) ->
+    jsforce.connect(jsforceOpts).then (_conn) ->
+      jsforce.deploy.connection conn = _conn
+    .catch (err) -> throw err
 
-    con = new jsforce.Connection
-      loginUrl: "https://#{['login', 'test'][~~!!config.sfdc.sandbox]}.salesforce.com"
-      version: config.sfdc.version
-
-    con.login username, "#{config.sfdc.password}#{config.sfdc.securitytoken}"
-
-  describeMetadata: ->
-    con.metadata.describe().then (res) ->
+  describeMetadata: (done) ->
+    conn.metadata.describe().then (res) ->
       db.metadata.insert res.metadataObjects
+    .catch (err) -> throw err
 
-  describeGlobal: ->
-    con.describeGlobal().then (res) ->
+  describeGlobal: (done) ->
+    conn.describeGlobal().then (res) ->
       db.global.insert res.sobjects
+    .catch (err) -> throw err
 
   listMetadata: (done) ->
     async.series
@@ -209,50 +98,43 @@ module.exports =
     , done
 
   validate: (done) ->
-    archive = require('archiver') 'zip'
-    archive.directory 'pkg', ''
-    archive.finalize()
-
-    deploy = con.metadata.deploy archive,
-      checkOnly: true
-      purgeOnDelete: true
-      rollbackOnError: true
-      runAllTests: false
-      testLevel: 'RunLocalTests'
+    process.stdin.resume()
 
     async.during (done) ->
       res = getDeployResult()
       if res.id
-        process.stdin.resume()
-        con.metadata.checkDeployStatus res.id, true, (err, res) ->
-          return done err, false if err
+        conn.metadata.checkDeployStatus(res.id, true).then (res) ->
           res = updateDeployResult res
-          res.reportFailures()
-
+          # res.reportFailures res.getRecentFailures lastDeployResult
+          # if lastDeployResult.lastModifiedDate isnt res.lastModifiedDate
+          console.log res
           msg = res.statusMessage()
-          if msg and lastDeployResult.statusMessage() isnt msg
+          if msg# and lastDeployResult.statusMessage() isnt msg
             if res.done
               gutil.log gutil.colors[if res.success then 'green' else 'red'] msg
             else
               gutil.log msg
-          done null, !res.done
+          done null, not res.done
+        .catch (err) -> throw err
       else
-        deploy.check (err, res) ->
-          updateDeployResult res
-          done err, !err
+        jsforce.deploy.deployFromDirectory path.join(config.git.dir, 'src'),
+          checkOnly: true
+          purgeOnDelete: true
+          rollbackOnError: true
+          runAllTests: false
+          testLevel: 'RunLocalTests'
+        .check (err, res) ->
+          throw err if err
+          gutil.log updateDeployResult(res).statusMessage()
+          done err, true
     , (next) ->
       setTimeout next, 1000
     , (err) ->
-      res = getDeployResult()
-      res.report()
-      done err ? res.success
-      process.exit() if canceled
-      return
+      deployComplete err, done
 
   retrieve: (done) ->
-    con.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
+    conn.metadata.retrieve(packageNames: 'unpackaged').then (res) ->
       gutil.log res
       res.pipe fs.createWriteStream 'pkg.zip'
       done()
-    , (err) ->
-      done err
+    .catch (err) -> throw err

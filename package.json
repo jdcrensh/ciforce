@@ -1,106 +1,107 @@
 {
-    "name": "sfdc-build",
-    "version": "0.1.0",
-    "description": "uild script for CI with SalesForce",
-    "author": "jon@redteal.com",
-    "license": "ISC",
-    "main": "build.coffee",
-    "repository": {
-        "type": "git",
-        "url": "ssh://stash.ecoact.org:7999/eo/ant-build.git"
+  "name": "sfdc-build",
+  "version": "0.1.0",
+  "description": "uild script for CI with SalesForce",
+  "author": "jon@redteal.com",
+  "license": "ISC",
+  "main": "build.coffee",
+  "repository": {
+    "type": "git",
+    "url": "ssh://stash.ecoact.org:7999/eo/ant-build.git"
+  },
+  "devDependencies": {
+    "archiver": "^0.15.1",
+    "async": "^1.4.2",
+    "better-console": "^0.2.4",
+    "coffee-script": "^1.10.0",
+    "del": "^2.0.2",
+    "fs-extra": "^0.24.0",
+    "glob": "^5.0.14",
+    "gulp": "^3.9.0",
+    "gulp-coffee": "^2.3.1",
+    "gulp-git": "^1.4.0",
+    "gulp-unzip": "^0.1.3",
+    "gulp-util": "^3.0.6",
+    "gulp-zip": "^3.0.2",
+    "jsforce": "^1.5.0",
+    "jsforce-metadata-tools": "^1.1.1",
+    "lodash": "^3.10.1",
+    "lokijs": "^1.3.10",
+    "minimatch": "^2.0.10",
+    "path": "^0.12.7",
+    "pretty-data": "^0.40.0",
+    "require-dir": "^0.3.0",
+    "xmldom": "^0.1.19",
+    "xmlpoke": "^0.1.10",
+    "xpath": "^0.0.9"
+  },
+  "coffeelintConfig": {
+    "max_line_length": {
+      "level": "warn",
+      "value": 120
     },
-    "devDependencies": {
-        "archiver": "^0.15.1",
-        "async": "^1.4.2",
-        "better-console": "^0.2.4",
-        "coffee-script": "^1.10.0",
-        "del": "^2.0.2",
-        "fs-extra": "^0.24.0",
-        "glob": "^5.0.14",
-        "gulp": "^3.9.0",
-        "gulp-coffee": "^2.3.1",
-        "gulp-git": "^1.4.0",
-        "gulp-unzip": "^0.1.3",
-        "gulp-util": "^3.0.6",
-        "gulp-zip": "^3.0.2",
-        "jsforce": "^1.5.0",
-        "lodash": "^3.10.1",
-        "lokijs": "^1.3.10",
-        "minimatch": "^2.0.10",
-        "path": "^0.12.7",
-        "pretty-data": "^0.40.0",
-        "require-dir": "^0.3.0",
-        "xmldom": "^0.1.19",
-        "xmlpoke": "^0.1.10",
-        "xpath": "^0.0.9"
+    "camel_case_classes": {
+      "level": "ignore"
     },
-    "coffeelintConfig": {
-        "max_line_length": {
-            "level": "warn",
-            "value": 120
-        },
-        "camel_case_classes": {
-            "level": "ignore"
-        },
-        "no_unnecessary_double_quotes": {
-            "level": "warn"
-        },
-        "no_interpolation_in_single_quotes": {
-            "level": "warn"
-        },
-        "braces_spacing": {
-            "level": "warn"
-        },
-        "cyclomatic_complexity": {
-            "level": "warn"
-        },
-        "colon_assignment_spacing": {
-            "level": "warn",
-            "spacing": {
-                "left": 0,
-                "right": 1
-            }
-        },
-        "no_throwing_strings": {
-            "level": "ignore"
-        }
+    "no_unnecessary_double_quotes": {
+      "level": "warn"
     },
-    "sfdc": {
-        "version": "33.0",
-        "checkOnly": true,
-        "allowMissingFiles": true,
-        "ignoreWarnings": true,
-        "maxPoll": 1000,
-        "pollWaitMillis": 5000,
-        "testReportsDir": "build/test-reports",
-        "fullDeploy": false,
-        "undeployMissing": true
+    "no_interpolation_in_single_quotes": {
+      "level": "warn"
     },
-    "defaultExcludes": {
-        "Layout": [
-            "FeedItem-Feed Item Layout",
-            "Question-Question Layout",
-            "Reply-Reply Layout",
-            "SocialPersona-Social Persona Layout"
-        ],
-        "CustomObject": [
-            "SocialPersona"
-        ],
-        "Workflow": [
-            "SocialPost",
-            "ExternalEventMapping",
-            "Question",
-            "Reply",
-            "SocialPersona"
-        ],
-        "Role": [
-            "EnlightCustomerExecutive",
-            "EnlightCustomerManager",
-            "EnlightCustomerUser"
-        ],
-        "Settings": [
-            "PathAssistant",
-            "PersonalJourney"
-        ]
+    "braces_spacing": {
+      "level": "warn"
+    },
+    "cyclomatic_complexity": {
+      "level": "warn"
+    },
+    "colon_assignment_spacing": {
+      "level": "warn",
+      "spacing": {
+        "left": 0,
+        "right": 1
+      }
+    },
+    "no_throwing_strings": {
+      "level": "ignore"
     }
+  },
+  "sfdc": {
+    "version": "33.0",
+    "checkOnly": true,
+    "allowMissingFiles": true,
+    "ignoreWarnings": true,
+    "maxPoll": 1000,
+    "pollWaitMillis": 5000,
+    "testReportsDir": "build/test-reports",
+    "fullDeploy": false,
+    "undeployMissing": true
+  },
+  "defaultExcludes": {
+    "Layout": [
+      "FeedItem-Feed Item Layout",
+      "Question-Question Layout",
+      "Reply-Reply Layout",
+      "SocialPersona-Social Persona Layout"
+    ],
+    "CustomObject": [
+      "SocialPersona"
+    ],
+    "Workflow": [
+      "SocialPost",
+      "ExternalEventMapping",
+      "Question",
+      "Reply",
+      "SocialPersona"
+    ],
+    "Role": [
+      "EnlightCustomerExecutive",
+      "EnlightCustomerManager",
+      "EnlightCustomerUser"
+    ],
+    "Settings": [
+      "PathAssistant",
+      "PersonalJourney"
+    ]
+  }
 }

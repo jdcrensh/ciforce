@@ -1,15 +1,13 @@
-# package object
-pkg = require '../package.json'
-
-# ext modules
-fs    = require 'fs-extra'
 {env} = require 'gulp-util'
+fs    = require 'fs-extra'
+pkg   = require '../package.json'
 
 # git configuration
 git =
   config:
     push: default: 'simple'
     user: name: env['git-name'], email: env['git-email']
+  dir: env['git-dir'] ? 'repo'
   ref: env['git-ref']
   url: env['git-url']
   branch: env['git-branch']

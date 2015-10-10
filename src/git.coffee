@@ -1,11 +1,3 @@
-# local libs
-{config, db, xml} = require('require-dir')()
-
-# package object
-pkg = require '../package.json'
-
-# ext modules
-_         = require 'lodash'
 async     = require 'async'
 del       = require 'del'
 fs        = require 'fs-extra'
@@ -14,17 +6,24 @@ glob      = require 'glob'
 gulp      = require 'gulp'
 minimatch = require 'minimatch'
 path      = require 'path'
+pkg       = require '../package.json'
 unzip     = require 'gulp-unzip'
+_         = require 'lodash'
 
-cwd = 'repo'        # repo directory
-pkg = 'pkg'         # package directory
-pkg_zip = 'pkg.zip' # package zip filename
-quiet = true        # git quite mode
+{config, db, xml} = do require 'require-dir'
 
-version = config.sfdc.version
-branch = config.git.branch
-repourl = config.git.url
-gitref = config.git.ref
+# package directory
+pkg = path.resolve 'pkg'
+# package zip path
+pkg_zip = path.resolve 'pkg.zip'
+# git quite mode
+quiet = true
+
+{version} = config.sfdc
+{branch}  = config.git
+cwd       = config.git.dir # repo directory
+repourl   = config.git.url
+gitref    = config.git.ref
 
 parseLine = (line) ->
   [diffStatus, fileName] = line
@@ -43,8 +42,7 @@ parseLine = (line) ->
       console.log "Unable to locate describe for directoryName: #{dir}"
       return
 
-    obj = {fileName, diffStatus}
-    obj.fullName = path.join subpath, base
+    obj = {fileName, diffStatus, fullName: path.join subpath, base}
 
     if suffix = describe.suffix
       obj.fullName = obj.fullName.replace new RegExp("\\.#{suffix}$"), ''
@@ -54,10 +52,12 @@ parseLine = (line) ->
 
 # parse git diff output
 parseDiff = (res) ->
-  diffs = _.chain res.replace /,/g, ''
-    .words(/.+/g).map (line) -> [(res = /^(\w)\t(.*)/.exec line)[1], path.shift(res[2])[1]]
+  diff = _.chain res.replace /,/g, ''
+    .words /.+/g
+    .map (line) -> [(res = /^(\w)\t(.*)/.exec line)[1], path.shift(res[2])[1]]
     .filter _.modArgs minimatch.filter('!{.*,package.xml}', matchBase: true), (line) -> line[1]
-    .map(parseLine).compact()
+    .map parseLine
+    .compact()
     .groupBy (obj) -> if obj.$loki? then 'updates' else 'inserts'
     .value()
 
@@ -70,6 +70,15 @@ parseDiff = (res) ->
   deletes = db.components.find diffStatus: 'D'
   {changes, deletes}
 
+
+forEachRemoteBranch = (iteratee, done) ->
+  git.exec {cwd, args: 'branch -a', quiet: true}, (err, res) ->
+    return done err, res if err
+    branches = res.split '\n'
+      .filter (line) -> line.match(/remotes\//) and not line.match(/->/)
+      .map (line) -> _.trim(line).replace /^remotes\/[^\/]+\//, ''
+    async.each branches, iteratee, done
+
 pkg_diff = (done) ->
   # execute the git-diff-tree command
   args = "diff-tree -r --no-commit-id --name-status #{gitref} #{branch}"
@@ -78,29 +87,29 @@ pkg_diff = (done) ->
 pkg_archive = (done, res) ->
   metaTypes = _.pluck db.metadata.find(metaFile: true), 'xmlName'
   changeset = res.diff.changes.reduce (arr, obj) ->
-    arr.push "src/#{obj.fileName}"
-    arr.push "src/#{obj.fileName}-meta.xml" if obj.type in metaTypes
+    arr.push path.join 'src', obj.fileName
+    arr.push path.join 'src', "#{obj.fileName}-meta.xml" if obj.type in metaTypes
     return arr
   , []
-  # console.log changeset
   args = "archive -0 -o #{pkg_zip} #{branch} '#{changeset.join('\' \'')}'"
   git.exec {args, cwd, quiet}, (err) -> done err, changeset
 
 pkg_unarchive = (done) ->
-  unzip = gulp.src "#{cwd}/#{pkg_zip}"
+  unzip = gulp.src pkg_zip
     .pipe unzip pkg
     .pipe gulp.dest pkg
-  unzip.on 'end', done
-  unzip.on 'error', done
+  complete = -> del pkg_zip; done()
+  unzip.on 'end', complete
+  unzip.on 'error', complete
 
 pkg_packageXml = (done, res) ->
-  dest = "#{pkg}/src/package.xml"
-  members = _(res.diff.changes).groupBy('type').mapPlucked('fullName').value()
+  dest = path.join pkg, 'src', 'package.xml'
+  members = _(res.diff.changes).groupBy('memberType').mapPlucked('fullName').value()
   xml.writePackage members, version, dest, done
 
 pkg_packageDestructiveXml = (done, res) ->
-  dest = "#{pkg}/src/destructiveChangesPost.xml"
-  members = _(res.diff.deletes).groupBy('type').mapPlucked('fullName').value()
+  dest = path.join pkg, 'src', 'destructiveChangesPost.xml'
+  members = _(res.diff.deletes).groupBy('memberType').mapPlucked('fullName').value()
   xml.writePackage members, version, dest, done
 
 module.exports =
@@ -114,6 +123,13 @@ module.exports =
         if repourl is _.trim res
           async.series [
             (done) -> git.fetch '', '', {args: '--all --tags', cwd}, done
+            (done) ->
+              forEachRemoteBranch (branch, done) ->
+                if branch is gitref
+                  git.checkout gitref, {args: '-f', cwd}, done
+                else
+                  async.setImmediate done
+              , done
             (done) -> git.checkout branch, {args: '-f', cwd}, done
             (done) -> git.reset "origin/#{branch}", {args: '--hard', cwd}, done
             (done) -> git.exec {args: 'clean -fd', cwd, log: true}, done
@@ -121,8 +137,10 @@ module.exports =
         else
           del cwd
           git.clone repourl, args: "--branch=#{branch} #{cwd}", done
-    ], done
-    return
+          throw 'error!'
+    ], (err) ->
+      throw err if err
+      done()
 
   pkg: (done) ->
     async.auto

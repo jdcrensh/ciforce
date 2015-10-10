@@ -1,6 +1,5 @@
-# ext modules
-_    = require 'lodash'
 path = require 'path'
+_    = require 'lodash'
 
 # extend path module with additional utility
 _.extend path,
