@@ -60,12 +60,12 @@ reportDeployResult = (res) ->
 reportDeployResultDetails = ->
   gutil.log ''
 
-  if (failures = asArray details.componentFailures).length
+  if (failures = _.compactArray details?.componentFailures).length
     gutil.log 'Failures:'
     failures.forEach (f) ->
       gutil.log " - #{f.problemType} on #{f.fileName} : #{f.problem}"
 
-  if (successes = asArray details.componentSuccesses).length
+  if (successes = _.compactArray details?.componentSuccesses).length
     gutil.log 'Successes:'
     successes.forEach (s) ->
       flag = switch 'true'
@@ -74,9 +74,6 @@ reportDeployResultDetails = ->
         when "#{s.deleted}" then '(D)'
         else '(~)'
       gutil.log " - #{flag} #{s.fileName}#{if s.componentType then ' [' + s.componentType + ']' else ''}"
-
-asArray = (arr) ->
-  _.chain([arr]).flatten().compact()
 
 
 class DeployResult

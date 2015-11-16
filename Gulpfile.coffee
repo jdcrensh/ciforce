@@ -20,5 +20,8 @@ gulp.task 'sfdc:login', sfdc.login
 gulp.task 'sfdc:describeMetadata', ['sfdc:login'], sfdc.describeMetadata
 gulp.task 'sfdc:describeGlobal', ['sfdc:login'], sfdc.describeGlobal
 gulp.task 'sfdc:listMetadata', ['sfdc:describeMetadata'], sfdc.listMetadata
-gulp.task 'sfdc:validate', ['git:pkg'], sfdc.validate
+gulp.task 'sfdc:excludeManaged', ['git:pkg'], sfdc.excludeManaged
+gulp.task 'sfdc:removeExcludes', ['sfdc:excludeManaged'], sfdc.removeExcludes
+gulp.task 'sfdc:pkg', ['sfdc:removeExcludes']
+gulp.task 'sfdc:validate', ['sfdc:pkg'], sfdc.validate
 gulp.task 'sfdc:retrieve', ['sfdc:login'], sfdc.retrieve

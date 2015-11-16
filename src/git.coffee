@@ -4,6 +4,7 @@ fs        = require 'fs-extra'
 git       = require 'gulp-git'
 glob      = require 'glob'
 gulp      = require 'gulp'
+gutil     = require 'gutil'
 minimatch = require 'minimatch'
 path      = require 'path'
 pkg       = require '../package.json'
@@ -50,10 +51,12 @@ parseLine = (line) ->
 
   return obj
 
+splitLines = (str) -> _.words str, /.+/g
+
 # parse git diff output
-parseDiff = (res) ->
-  diff = _.chain res.replace /,/g, ''
-    .words /.+/g
+parseDiff = (res='') ->
+  diffs = _.chain _.trim(res).replace /,/g, ''
+    .thru splitLines
     .map (line) -> [(res = /^(\w)\t(.*)/.exec line)[1], path.shift(res[2])[1]]
     .filter _.modArgs minimatch.filter('!{.*,package.xml}', matchBase: true), (line) -> line[1]
     .map parseLine
@@ -62,17 +65,20 @@ parseDiff = (res) ->
     .value()
 
   # insert/update parsed diff output
-  db.components.insert diffs.inserts
-  db.components.update _.uniq diffs.updates, (obj) -> obj.$loki
+  if diffs.inserts?.length
+    db.components.insert diffs.inserts
+  if diffs.updates?.length
+    db.components.update _.uniq diffs.updates, (obj) -> obj.$loki
 
   # diff completed
-  changes = db.components.find diffStatus: $in: 'ACMRT'.split ''
-  deletes = db.components.find diffStatus: 'D'
+  changes = db.components.find(diffStatus: $in: 'ACMRT'.split '') ? []
+  deletes = db.components.find(diffStatus: 'D') ? []
+
+  gutil.log "#{changes.length} to add/update, #{deletes.length} to delete"
   {changes, deletes}
 
-
 forEachRemoteBranch = (iteratee, done) ->
-  git.exec {cwd, args: 'branch -a', quiet: true}, (err, res) ->
+  git.exec {cwd, args: 'branch -a', quiet}, (err, res) ->
     return done err, res if err
     branches = res.split '\n'
       .filter (line) -> line.match(/remotes\//) and not line.match(/->/)
@@ -82,17 +88,24 @@ forEachRemoteBranch = (iteratee, done) ->
 pkg_diff = (done) ->
   # execute the git-diff-tree command
   args = "diff-tree -r --no-commit-id --name-status #{gitref} #{branch}"
-  git.exec {args, cwd, quiet}, (err, res) -> if err then done err else done null, parseDiff res
+  git.exec {args, cwd, quiet}, (err, res) -> done err, parseDiff res
 
-pkg_archive = (done, res) ->
+# Adds in *-meta.xml files for changes if applicable
+expandChangeset = (changes) ->
   metaTypes = _.pluck db.metadata.find(metaFile: true), 'xmlName'
-  changeset = res.diff.changes.reduce (arr, obj) ->
+  changes.reduce (arr, obj) ->
     arr.push path.join 'src', obj.fileName
     arr.push path.join 'src', "#{obj.fileName}-meta.xml" if obj.type in metaTypes
     return arr
   , []
-  args = "archive -0 -o #{pkg_zip} #{branch} '#{changeset.join('\' \'')}'"
-  git.exec {args, cwd, quiet}, (err) -> done err, changeset
+
+pkg_archive = (done, res) ->
+  if res.diff.changes.length
+    changeset = expandChangeset res.diff.changes
+    args = "archive -0 -o #{pkg_zip} #{branch} '#{changeset.join('\' \'')}'"
+    git.exec {args, cwd, quiet}, (err) -> done err, changeset
+  else
+    async.setImmediate done
 
 pkg_unarchive = (done) ->
   unzip = gulp.src pkg_zip
@@ -137,10 +150,7 @@ module.exports =
         else
           del cwd
           git.clone repourl, args: "--branch=#{branch} #{cwd}", done
-          throw 'error!'
-    ], (err) ->
-      throw err if err
-      done()
+    ], done
 
   pkg: (done) ->
     async.auto
