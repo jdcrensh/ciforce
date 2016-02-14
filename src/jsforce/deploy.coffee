@@ -1,8 +1,6 @@
 path = require 'path'
 jsforce = require 'jsforce'
 archiver = require 'archiver'
-Promise = jsforce.Promise
-gutil = require 'gulp-util'
 _ = require 'lodash'
 
 conn = deployLocator = null
@@ -12,7 +10,7 @@ connection = (_conn) ->
 
 deployFromZipStream = (zipStream, options) ->
   conn = connection()
-  gutil.log 'Deploying to server...'
+  console.log 'Deploying to server...'
   conn.metadata.pollTimeout = options.pollTimeout or 60 * 1000
   conn.metadata.pollInterval = options.pollInterval or 5 * 1000
   conn.metadata.deploy zipStream, options
@@ -31,7 +29,7 @@ deployFromDirectory = (packageDirectoryPath, options) ->
   , options
 
 reportDeployResult = (res) ->
-  gutil.log do ->
+  console.log do ->
     if res.success is 'SucceededPartial'
       'Deployment partially succeeded.'
     else if res.success
@@ -42,38 +40,38 @@ reportDeployResult = (res) ->
       'Deploy not completed yet.'
 
   if res.errorMessage
-    gutil.log "#{res.errorStatusCode}: #{res.errorMessage}"
+    console.log "#{res.errorStatusCode}: #{res.errorMessage}"
 
-  gutil.log()
-  gutil.log "Id: #{res.id}"
-  gutil.log "Status: #{res.status}"
-  gutil.log "Success: #{res.success}"
-  gutil.log "Done: #{res.done}"
-  gutil.log "Component Errors: #{res.numberComponentErrors}"
-  gutil.log "Components Deployed: #{res.numberComponentsDeployed}"
-  gutil.log "Components Total: #{res.numberComponentsTotal}"
-  gutil.log "Test Errors: #{res.numberTestErrors}"
-  gutil.log "Tests Completed: #{res.numberTestsCompleted}"
-  gutil.log "Tests Total: #{res.numberTestsTotal}"
+  console.log()
+  console.log "Id: #{res.id}"
+  console.log "Status: #{res.status}"
+  console.log "Success: #{res.success}"
+  console.log "Done: #{res.done}"
+  console.log "Component Errors: #{res.numberComponentErrors}"
+  console.log "Components Deployed: #{res.numberComponentsDeployed}"
+  console.log "Components Total: #{res.numberComponentsTotal}"
+  console.log "Test Errors: #{res.numberTestErrors}"
+  console.log "Tests Completed: #{res.numberTestsCompleted}"
+  console.log "Tests Total: #{res.numberTestsTotal}"
   reportDeployResultDetails()
 
 reportDeployResultDetails = ->
-  gutil.log ''
+  console.log ''
 
   if (failures = _.compactArray details?.componentFailures).length
-    gutil.log 'Failures:'
+    console.log 'Failures:'
     failures.forEach (f) ->
-      gutil.log " - #{f.problemType} on #{f.fileName} : #{f.problem}"
+      console.log " - #{f.problemType} on #{f.fileName} : #{f.problem}"
 
   if (successes = _.compactArray details?.componentSuccesses).length
-    gutil.log 'Successes:'
+    console.log 'Successes:'
     successes.forEach (s) ->
       flag = switch 'true'
         when "#{s.changed}" then '(M)'
         when "#{s.created}" then '(A)'
         when "#{s.deleted}" then '(D)'
         else '(~)'
-      gutil.log " - #{flag} #{s.fileName}#{if s.componentType then ' [' + s.componentType + ']' else ''}"
+      console.log " - #{flag} #{s.fileName}#{if s.componentType then ' [' + s.componentType + ']' else ''}"
 
 
 class DeployResult
@@ -122,14 +120,14 @@ class RunTestResult
   reportFailures: (failures) ->
     return unless failures?.length
     sep = _.repeat '-', 80
-    gutil.log sep
-    gutil.log 'Test Failures:'
+    console.log sep
+    console.log 'Test Failures:'
     failures.forEach (failure, i) ->
       indent = _.repeat ' ', (num = "#{i + 1}. ").length
-      gutil.log "#{num}#{failure.name}.#{failure.methodName}"
-      gutil.log indent + failure.message
-      failure.stackTrace.split('\n').forEach (line) -> gutil.log indent + "#{line}"
-    gutil.log sep
+      console.log "#{num}#{failure.name}.#{failure.methodName}"
+      console.log indent + failure.message
+      failure.stackTrace.split('\n').forEach (line) -> console.log indent + "#{line}"
+    console.log sep
 
 
 class ComponentResults
@@ -142,14 +140,14 @@ class ComponentResults
   reportFailures: (failures) ->
     return unless failures?.length
     sep = _.repeat '-', 80
-    gutil.log sep
-    gutil.log 'Component Failures:'
+    console.log sep
+    console.log 'Component Failures:'
     failures.forEach (failure, i) ->
       indent = _.repeat ' ', (num = "#{i + 1}. ").length
-      gutil.log "#{num}#{failure.name}.#{failure.methodName}"
-      gutil.log indent + failure.message
-      failure.stackTrace.split('\n').forEach (line) -> gutil.log indent + "#{line}"
-    gutil.log sep
+      console.log "#{num}#{failure.name}.#{failure.methodName}"
+      console.log indent + failure.message
+      failure.stackTrace.split('\n').forEach (line) -> console.log indent + "#{line}"
+    console.log sep
 
 
 module.exports = {
