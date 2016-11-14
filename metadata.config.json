@@ -1,0 +1,29 @@
+{
+  "defaultExcludes": {
+    "Layout": [
+      "FeedItem-Feed Item Layout",
+      "Question-Question Layout",
+      "Reply-Reply Layout",
+      "SocialPersona-Social Persona Layout"
+    ],
+    "CustomObject": [
+      "SocialPersona"
+    ],
+    "Workflow": [
+      "SocialPost",
+      "ExternalEventMapping",
+      "Question",
+      "Reply",
+      "SocialPersona"
+    ],
+    "Role": [
+      "EnlightCustomerExecutive",
+      "EnlightCustomerManager",
+      "EnlightCustomerUser"
+    ],
+    "Settings": [
+      "PathAssistant",
+      "PersonalJourney"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "version": "33.0",
+  "checkOnly": true,
+  "allowMissingFiles": true,
+  "ignoreWarnings": true,
+  "maxPoll": 1000,
+  "pollWaitMillis": 5000,
+  "testReportsDir": "build/test-reports",
+  "fullDeploy": false,
+  "undeployMissing": true
+}
